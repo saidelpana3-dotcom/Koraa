@@ -1,0 +1,6 @@
+{
+  "name": "Kora",
+  "description": "Predict football match scores, earn coins, climb the fan leaderboard, and win exciting prizes on Kora.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

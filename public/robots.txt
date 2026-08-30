@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+# Crawl-delay for polite scraping
+Crawl-delay: 1
+
+# Sitemap Location
+Sitemap: https://koraweb.ai.studio/sitemap.xml

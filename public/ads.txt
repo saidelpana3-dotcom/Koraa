@@ -1,0 +1,8 @@
+# Ads.txt for Kora Studio
+# Direct and Reseller Authorized Ad inventory
+
+# Adcash
+# adcash.com, PUBLISHER_ID, DIRECT
+
+# Google AdSense / Ad Exchange
+# google.com, pub-0000000000000000, DIRECT, f08c47fec0942fa0

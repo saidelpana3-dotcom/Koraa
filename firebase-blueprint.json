@@ -1,0 +1,132 @@
+{
+  "entities": {
+    "users": {
+      "title": "Users",
+      "description": "User profiles, leaderboard points, accuracy stats, and redeemed rewards history.",
+      "type": "object",
+      "properties": {
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "points": { "type": "number" },
+        "exactPredictions": { "type": "number" },
+        "correctOutcomes": { "type": "number font" },
+        "totalPredictions": { "type": "number" },
+        "favoriteTeam": { "type": "string" },
+        "rankBadge": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["displayName", "points"]
+    },
+    "matches": {
+      "title": "Matches",
+      "description": "Football fixtures available for score and outcome predictions.",
+      "type": "object",
+      "properties": {
+        "homeTeam": { "type": "string" },
+        "homeTeamAr": { "type": "string" },
+        "homeLogo": { "type": "string" },
+        "awayTeam": { "type": "string" },
+        "awayTeamAr": { "type": "string" },
+        "awayLogo": { "type": "string" },
+        "homeScore": { "type": "number" },
+        "awayScore": { "type": "number" },
+        "leagueName": { "type": "string" },
+        "leagueNameAr": { "type": "string" },
+        "status": { "type": "string" },
+        "time": { "type": "string" },
+        "date": { "type": "string" },
+        "isFinished": { "type": "boolean" },
+        "exactScorePoints": { "type": "number" },
+        "outcomePoints": { "type": "number" }
+      },
+      "required": ["homeTeam", "awayTeam", "leagueName", "status"]
+    },
+    "predictions": {
+      "title": "Predictions",
+      "description": "Match score predictions submitted by users.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userDisplayName": { "type": "string" },
+        "matchId": { "type": "string" },
+        "predictedHomeScore": { "type": "number" },
+        "predictedAwayScore": { "type": "number" },
+        "predictedOutcome": { "type": "string" },
+        "status": { "type": "string" },
+        "pointsEarned": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "matchId", "predictedHomeScore", "predictedAwayScore"]
+    },
+    "prizes": {
+      "title": "Prizes",
+      "description": "Rewards and prizes available for fans to redeem with accumulated points.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "titleAr": { "type": "string" },
+        "description": { "type": "string" },
+        "descriptionAr": { "type": "string" },
+        "pointsCost": { "type": "number" },
+        "category": { "type": "string" },
+        "image": { "type": "string" },
+        "stock": { "type": "number" },
+        "claimedCount": { "type": "number" }
+      },
+      "required": ["title", "pointsCost"]
+    },
+    "prizeClaims": {
+      "title": "Prize Claims",
+      "description": "User requests for claiming physical or digital prizes.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "prizeId": { "type": "string" },
+        "prizeTitle": { "type": "string" },
+        "pointsSpent": { "type": "number" },
+        "status": { "type": "string" },
+        "shippingAddress": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "claimedAt": { "type": "string" }
+      },
+      "required": ["userId", "prizeId", "pointsSpent"]
+    },
+    "matchSubscriptions": {
+      "title": "Match Subscriptions",
+      "description": "User subscriptions for push notifications on specific matches.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "matchId": { "type": "string" },
+        "homeTeam": { "type": "string" },
+        "homeTeamAr": { "type": "string" },
+        "awayTeam": { "type": "string" },
+        "awayTeamAr": { "type": "string" },
+        "notifyGoals": { "type": "boolean" },
+        "notifyStart": { "type": "boolean" },
+        "notifyRedCards": { "type": "boolean" },
+        "fcmToken": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "matchId"]
+    },
+    "notifications": {
+      "title": "Notifications Log",
+      "description": "Triggered goal, kick-off, and card notifications log for users.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "matchId": { "type": "string" },
+        "title": { "type": "string" },
+        "titleAr": { "type": "string" },
+        "body": { "type": "string" },
+        "bodyAr": { "type": "string" },
+        "type": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "read": { "type": "boolean" }
+      },
+      "required": ["matchId", "title", "body", "timestamp"]
+    }
+  }
+}
