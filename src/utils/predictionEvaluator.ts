@@ -39,6 +39,14 @@ export const FINISHED_MATCHES_CATALOG: Record<string, {
   'm_egy_zamalek_pyramids': { homeScore: 1, awayScore: 1, homeTeamAr: 'الزمالك', awayTeamAr: 'بيراميدز', customCoinsReward: 50 },
 
   // Premier League
+  'm_epl_manutd_ipswich': { homeScore: 5, awayScore: 2, homeTeamAr: 'مان يونايتد', awayTeamAr: 'إيبسويتش تاون', homeTeam: 'Manchester United', awayTeam: 'Ipswich Town', customCoinsReward: 50 },
+  'm_epl_ipswich_manutd': { homeScore: 2, awayScore: 5, homeTeamAr: 'إيبسويتش تاون', awayTeamAr: 'مان يونايتد', homeTeam: 'Ipswich Town', awayTeam: 'Manchester United', customCoinsReward: 50 },
+  'm_epl_chelsea_brighton': { homeScore: 4, awayScore: 3, homeTeamAr: 'تشيلسي', awayTeamAr: 'برايتون', homeTeam: 'Chelsea FC', awayTeam: 'Brighton & Hove Albion', customCoinsReward: 50 },
+  'm_epl_brighton_chelsea': { homeScore: 3, awayScore: 4, homeTeamAr: 'برايتون', awayTeamAr: 'تشيلسي', homeTeam: 'Brighton & Hove Albion', awayTeam: 'Chelsea FC', customCoinsReward: 50 },
+  'm_epl_sunderland_fulham': { homeScore: 1, awayScore: 0, homeTeamAr: 'سندرلاند', awayTeamAr: 'فولهام', homeTeam: 'Sunderland AFC', awayTeam: 'Fulham FC', customCoinsReward: 50 },
+  'm_epl_fulham_sunderland': { homeScore: 0, awayScore: 1, homeTeamAr: 'فولهام', awayTeamAr: 'سندرلاند', homeTeam: 'Fulham FC', awayTeam: 'Sunderland AFC', customCoinsReward: 50 },
+  'm_epl_leeds_brentford': { homeScore: 1, awayScore: 1, homeTeamAr: 'ليدز', awayTeamAr: 'برينتفورد', homeTeam: 'Leeds United', awayTeam: 'Brentford FC', customCoinsReward: 50 },
+  'm_epl_brentford_leeds': { homeScore: 1, awayScore: 1, homeTeamAr: 'برينتفورد', awayTeamAr: 'ليدز', homeTeam: 'Brentford FC', awayTeam: 'Leeds United', customCoinsReward: 50 },
   'm_epl_tottenham_newcastle': { homeScore: 0, awayScore: 2, homeTeamAr: 'توتنهام', awayTeamAr: 'نيوكاسل يونايتد', homeTeam: 'Tottenham Hotspur', awayTeam: 'Newcastle United', customCoinsReward: 50 },
   'm_epl_newcastle_tottenham': { homeScore: 2, awayScore: 0, homeTeamAr: 'نيوكاسل يونايتد', awayTeamAr: 'توتنهام', homeTeam: 'Newcastle United', awayTeam: 'Tottenham Hotspur', customCoinsReward: 50 },
   'm_epl_coventry_hull': { homeScore: 0, awayScore: 1, homeTeamAr: 'كوفنتري سيتي', awayTeamAr: 'هال سيتي', homeTeam: 'Coventry City', awayTeam: 'Hull City', customCoinsReward: 50 },
@@ -58,6 +66,8 @@ export const FINISHED_MATCHES_CATALOG: Record<string, {
   'm_epl_everton_astonvilla': { homeScore: 0, awayScore: 1, homeTeamAr: 'إيفرتون', awayTeamAr: 'أستون فيلا', customCoinsReward: 50 },
 
   // La Liga
+  'm_laliga_real_malaga': { homeScore: 4, awayScore: 0, homeTeamAr: 'الريال', awayTeamAr: 'مالقا', homeTeam: 'Real Madrid', awayTeam: 'Málaga CF', customCoinsReward: 50 },
+  'm_laliga_malaga_real': { homeScore: 0, awayScore: 4, homeTeamAr: 'مالقا', awayTeamAr: 'الريال', homeTeam: 'Málaga CF', awayTeam: 'Real Madrid', customCoinsReward: 50 },
   'm_laliga_alaves_villarreal': { homeScore: 1, awayScore: 0, homeTeamAr: 'ألافيس', awayTeamAr: 'فياريال', customCoinsReward: 50 },
   'm_laliga_villarreal_alaves': { homeScore: 0, awayScore: 1, homeTeamAr: 'فياريال', awayTeamAr: 'ألافيس', customCoinsReward: 50 },
   'm_laliga_racing_elche': { homeScore: 3, awayScore: 2, homeTeamAr: 'رسينغ', awayTeamAr: 'إلتشيه', customCoinsReward: 50 },
@@ -85,6 +95,10 @@ export const FINISHED_MATCHES_CATALOG: Record<string, {
   'm_laliga_atletico_sevilla': { homeScore: 3, awayScore: 1, homeTeamAr: 'أتلتيكو مدريد', awayTeamAr: 'إشبيلية', homeTeam: 'Atletico Madrid', awayTeam: 'Sevilla FC', customCoinsReward: 50 },
 
   // Ligue 1
+  'm_ligue1_paris_nice': { homeScore: 3, awayScore: 0, homeTeamAr: 'باريس', awayTeamAr: 'نيس', homeTeam: 'Paris FC', awayTeam: 'OGC Nice', customCoinsReward: 50 },
+  'm_ligue1_nice_paris': { homeScore: 0, awayScore: 3, homeTeamAr: 'نيس', awayTeamAr: 'باريس', homeTeam: 'OGC Nice', awayTeam: 'Paris FC', customCoinsReward: 50 },
+  'm_ligue1_rennes_lemans': { homeScore: 3, awayScore: 2, homeTeamAr: 'رين', awayTeamAr: 'نادي لومان', homeTeam: 'Stade Rennais FC', awayTeam: 'Le Mans FC', customCoinsReward: 50 },
+  'm_ligue1_lemans_rennes': { homeScore: 2, awayScore: 3, homeTeamAr: 'نادي لومان', awayTeamAr: 'رين', homeTeam: 'Le Mans FC', awayTeam: 'Stade Rennais FC', customCoinsReward: 50 },
   'm_ligue1_auxerre_angers': { homeScore: 1, awayScore: 3, homeTeamAr: 'أوكسير', awayTeamAr: 'أنجيه', homeTeam: 'AJ Auxerre', awayTeam: 'Angers SCO', customCoinsReward: 50 },
   'm_ligue1_angers_auxerre': { homeScore: 3, awayScore: 1, homeTeamAr: 'أنجيه', awayTeamAr: 'أوكسير', homeTeam: 'Angers SCO', awayTeam: 'AJ Auxerre', customCoinsReward: 50 },
   'm_ligue1_brest_toulouse': { homeScore: 2, awayScore: 2, homeTeamAr: 'بريست', awayTeamAr: 'تولوز', homeTeam: 'Stade Brestois 29', awayTeam: 'Toulouse FC', customCoinsReward: 50 },
