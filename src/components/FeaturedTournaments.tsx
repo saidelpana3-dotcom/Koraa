@@ -1,25 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Trophy, Sparkles, Gift, MapPin, User, ArrowRight, ShieldCheck, CheckCircle2, Flame, Coins, Clock, CheckCircle, AlertCircle, Award, ListFilter, Radio } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { Trophy, Sparkles, Gift, ArrowRight, ShieldCheck, Flame, ListFilter, Radio, CheckCircle, CheckCircle2 } from 'lucide-react';
 import { Language, ThemeMode, Match } from '../types';
-import { TeamLogo } from './TeamLogo';
-
-// Countdown formatter helper function matching MatchCard
-function formatCountdown(kickoffMs?: number): string {
-  if (!kickoffMs) return '00:00:00';
-  const diff = kickoffMs - Date.now();
-  if (diff <= 0) return '00:00:00:00';
-
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-  const minutes = Math.floor((diff % (1000 * 60)) / (1000 * 60));
-  const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  if (days > 0) {
-    return `${pad(days)}:${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
-  }
-  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
-}
+import { MatchCard } from './MatchCard';
 
 interface TournamentMatchItemProps {
   match: Match;
@@ -36,326 +18,16 @@ const TournamentMatchItem: React.FC<TournamentMatchItemProps> = ({
   userPred,
   onOpenDetails,
 }) => {
-  const isAr = language === 'ar';
-  const isDark = theme === 'dark';
-  const isLive = match.status === 'LIVE' || match.status === 'HALF_TIME';
-  const isFinished = match.status === 'FINISHED' || match.pointsDistributed === true;
-  const isStarted = isLive || isFinished || match.isPredictionClosed || (!!match.kickoffTimeMs && Date.now() >= match.kickoffTimeMs);
-  const isUpcoming = !isFinished && !isLive && match.status === 'UPCOMING';
-  const coinsReward = match.customCoinsReward || 50;
-
-  const [countdownStr, setCountdownStr] = useState<string>(() => formatCountdown(match.kickoffTimeMs));
-
-  useEffect(() => {
-    if (!isUpcoming) return;
-    const interval = setInterval(() => {
-      setCountdownStr(formatCountdown(match.kickoffTimeMs));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [isUpcoming, match.kickoffTimeMs]);
-
-  // Check if prediction is exact match
-  const isExactPrediction = isFinished && userPred && 
-    match.homeScore === userPred.predictedHomeScore && 
-    match.awayScore === userPred.predictedAwayScore;
-
-  // Extract goal events for preview in finished matches
-  const goalEvents = useMemo(() => {
-    if (!match.events || match.events.length === 0) return [];
-    return match.events.filter((e) => {
-      const type = (e.type || '').toUpperCase();
-      return type.includes('GOAL') || type === 'PENALTY_GOAL';
-    });
-  }, [match.events]);
-
   return (
-    <div
-      className={`rounded-3xl border p-4 sm:p-5 transition-all shadow-sm ${
-        isFinished
-          ? isDark
-            ? 'bg-slate-900/80 border-slate-800 hover:border-slate-700 text-white'
-            : 'bg-white border-slate-200/90 hover:border-slate-300 text-slate-900'
-          : isDark
-            ? 'bg-slate-900/90 border-slate-800 hover:border-amber-500/50 text-white shadow-amber-950/10'
-            : 'bg-white border-slate-200 hover:border-amber-400 text-slate-900 shadow-sm'
-      }`}
-    >
-      {/* Top Header Row: League Tag, Coins Reward & Match Status */}
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <div className="flex items-center gap-1.5 text-xs font-bold text-amber-700 dark:text-amber-300 truncate">
-          <span className="text-sm shrink-0">{match.leagueIcon || '🏆'}</span>
-          <span className="truncate">{isAr ? match.leagueNameAr : match.leagueName}</span>
-        </div>
-
-        <div className="flex items-center gap-1.5 shrink-0">
-          {/* Status Badge: Finished / Distributed or Coins reward */}
-          {isFinished ? (
-            <div className="flex items-center gap-1 text-[11px] font-black px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 shadow-xs">
-              <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
-              <span>{isAr ? 'تم توزيع النقاط والكوينز 🪙' : 'Points & Coins Awarded 🪙'}</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1 text-[11px] font-black px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-600 dark:text-amber-300 shadow-xs">
-              <Coins className="w-3.5 h-3.5 text-amber-500 animate-bounce" />
-              <span>{isAr ? `${coinsReward} كوينز 🪙` : `${coinsReward} Coins 🪙`}</span>
-            </div>
-          )}
-
-          <div className={`flex items-center gap-1 text-[11px] font-extrabold px-2.5 py-0.5 rounded-full border ${
-            isFinished
-              ? isDark ? 'bg-slate-800 border-slate-700 text-slate-400' : 'bg-slate-100 border-slate-200 text-slate-600'
-              : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
-          }`}>
-            <span>{isAr ? match.dateAr || match.dayLabelAr || 'الجمعة، 8/28' : match.date}</span>
-            <span>•</span>
-            <span>{match.time}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Special Banner */}
-      {!isFinished ? (
-        <div className="mb-3.5 p-2.5 rounded-2xl bg-gradient-to-r from-amber-500/15 via-emerald-500/10 to-amber-500/15 border border-amber-500/30 flex items-center justify-between gap-2 text-xs">
-          <div className="flex items-center gap-1.5 font-black text-amber-700 dark:text-amber-300 truncate">
-            <Flame className="w-4 h-4 text-amber-500 shrink-0" />
-            <span className="truncate">
-              {isAr ? `مكافأة خاصة لهذه المباراة: ${coinsReward} كوينز عند صحة التوقع!` : `Special Match Reward: ${coinsReward} Coins for correct score!`}
-            </span>
-          </div>
-          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/30 shrink-0">
-            {isAr ? 'مباراة جارية 🔥' : 'Active Match 🔥'}
-          </span>
-        </div>
-      ) : (
-        <div className="mb-3.5 p-2.5 rounded-2xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 flex items-center justify-between gap-2 text-xs">
-          <div className="flex items-center gap-1.5 font-bold text-slate-700 dark:text-slate-300 truncate">
-            <Award className="w-4 h-4 text-amber-500 shrink-0" />
-            <span className="truncate">
-              {isAr ? `نتيجة معتمدة وموزع عليها ${coinsReward} كوينز للمتوقعين الفائزين` : `Final score approved with ${coinsReward} Coins awarded to winners`}
-            </span>
-          </div>
-          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 shrink-0">
-            {isAr ? 'منتهية 🏁' : 'Concluded 🏁'}
-          </span>
-        </div>
-      )}
-
-      {/* Teams & Scoreboard Display with Date, Time, and Countdown Timer */}
-      <div 
-        onClick={() => onOpenDetails && onOpenDetails(match, isFinished ? 'stats' : 'lineup')}
-        className="grid grid-cols-7 items-center gap-2 py-2 cursor-pointer"
-      >
-        {/* Home Team */}
-        <div className="col-span-3 flex flex-col items-center sm:items-start text-center sm:text-left rtl:sm:text-right gap-1.5 min-w-0">
-          <div className="relative hover:scale-105 transition-transform duration-200">
-            <TeamLogo
-              teamName={match.homeTeam}
-              logo={match.homeLogo}
-              sizeClassName="w-12 h-12 sm:w-14 sm:h-14"
-              className="drop-shadow-sm"
-            />
-          </div>
-          <div className="w-full">
-            <span className={`block font-black text-xs sm:text-sm line-clamp-1 tracking-tight ${
-              isDark ? 'text-slate-100' : 'text-slate-900'
-            }`}>
-              {isAr ? match.homeTeamAr || match.homeTeam : match.homeTeam}
-            </span>
-            {isAr && match.homeTeamAr && (
-              <span className={`block text-[10px] font-semibold line-clamp-1 ${
-                isDark ? 'text-slate-400' : 'text-slate-500'
-              }`}>
-                {match.homeTeam}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Center Countdown Timer Badge / Kickoff Time & Date or Score */}
-        <div className="col-span-1 flex flex-col items-center justify-center text-center gap-1">
-          {isUpcoming ? (
-            <div className="flex flex-col items-center gap-1">
-              <span className={`text-[10px] font-extrabold ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                {isAr ? (match.dateAr || match.dayLabelAr || 'اليوم') : match.date}
-              </span>
-              <div className={`text-base sm:text-lg font-black tracking-tight font-mono ${
-                isDark ? 'text-white' : 'text-slate-900'
-              }`}>
-                {match.time}
-              </div>
-              <div className={`px-2 py-0.5 font-mono font-black text-[9px] tracking-wider rounded-lg border shadow-inner whitespace-nowrap ${
-                isDark ? 'bg-slate-950 text-cyan-400 border-cyan-500/30' : 'bg-teal-50 text-teal-800 border-teal-200'
-              }`}>
-                {countdownStr}
-              </div>
-            </div>
-          ) : (
-            <div className="flex flex-col items-center gap-1">
-              {isLive && (
-                <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border flex items-center gap-1 animate-pulse shadow-sm ${
-                  isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                }`}>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                  <span>{match.minute ? (isAr ? `د ${match.minute}'` : `${match.minute}'`) : (isAr ? 'مباشر' : 'LIVE')}</span>
-                </span>
-              )}
-              {isFinished && (
-                <span className="text-[9px] font-black px-2 py-0.5 rounded-md bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
-                  {isAr ? 'نهاية المباراة' : 'Full Time'}
-                </span>
-              )}
-              <div className={`flex items-center gap-1.5 font-black text-2xl sm:text-3xl font-mono px-3 py-1 rounded-xl border shadow-inner ${
-                isDark ? 'bg-slate-950 text-white border-slate-800' : 'bg-slate-100 text-slate-900 border-slate-200'
-              }`}>
-                <span className={match.homeScore > match.awayScore ? 'text-emerald-500 font-black' : isDark ? 'text-slate-200' : 'text-slate-800'}>
-                  {match.homeScore}
-                </span>
-                <span className={`${isDark ? 'text-slate-600' : 'text-slate-400'} text-lg font-light`}>-</span>
-                <span className={match.awayScore > match.homeScore ? 'text-emerald-500 font-black' : isDark ? 'text-slate-200' : 'text-slate-800'}>
-                  {match.awayScore}
-                </span>
-              </div>
-
-              {/* User prediction or Unpredicted status */}
-              {userPred ? (
-                <div className={`mt-1 px-2.5 py-0.5 rounded-lg text-[9px] font-black border shadow-xs whitespace-nowrap flex items-center justify-center gap-1 ${
-                  isFinished
-                    ? isExactPrediction
-                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50 ring-1 ring-emerald-500/40'
-                      : isDark ? 'bg-slate-900 text-slate-300 border-slate-700' : 'bg-slate-100 text-slate-700 border-slate-300'
-                    : isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-amber-50 text-amber-800 border-amber-300'
-                }`}>
-                  <span>🎯</span>
-                  <span>{isAr ? 'توقعك:' : 'Pred:'}</span>
-                  <span className="font-mono font-black">{userPred.predictedHomeScore}</span>
-                  <span className="text-slate-400 font-bold">-</span>
-                  <span className="font-mono font-black">{userPred.predictedAwayScore}</span>
-                  {isExactPrediction && (
-                    <span className="text-emerald-400 font-bold">✓</span>
-                  )}
-                </div>
-              ) : (
-                <div className={`mt-1 px-2 py-0.5 rounded-lg text-[9px] font-extrabold tracking-tight whitespace-nowrap flex items-center justify-center gap-1 border ${
-                  isDark ? 'bg-slate-950/80 text-slate-400 border-slate-800' : 'bg-slate-100 text-slate-500 border-slate-200'
-                }`}>
-                  <span className="text-rose-400">❌</span>
-                  <span>{isAr ? 'لم تتوقع' : 'No pred'}</span>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Away Team */}
-        <div className="col-span-3 flex flex-col items-center sm:items-end text-center sm:text-right rtl:sm:text-left gap-1.5 min-w-0">
-          <div className="relative hover:scale-105 transition-transform duration-200">
-            <TeamLogo
-              teamName={match.awayTeam}
-              logo={match.awayLogo}
-              sizeClassName="w-12 h-12 sm:w-14 sm:h-14"
-              className="drop-shadow-sm"
-            />
-          </div>
-          <div className="w-full">
-            <span className={`block font-black text-xs sm:text-sm line-clamp-1 tracking-tight ${
-              isDark ? 'text-slate-100' : 'text-slate-900'
-            }`}>
-              {isAr ? match.awayTeamAr || match.awayTeam : match.awayTeam}
-            </span>
-            {isAr && match.awayTeamAr && (
-              <span className={`block text-[10px] font-semibold line-clamp-1 ${
-                isDark ? 'text-slate-400' : 'text-slate-500'
-              }`}>
-                {match.awayTeam}
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Goal Scorers Snippet for Finished Matches */}
-      {isFinished && goalEvents.length > 0 && (
-        <div className="mt-2.5 p-2 rounded-xl bg-slate-100/70 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-700/50 text-[11px] text-slate-700 dark:text-slate-300 flex items-center gap-2 overflow-x-auto">
-          <span className="font-black text-amber-500 shrink-0">⚽ {isAr ? 'الأهداف:' : 'Goals:'}</span>
-          <div className="flex items-center gap-2 flex-wrap text-[10px]">
-            {goalEvents.slice(0, 4).map((evt, idx) => (
-              <span key={evt.id || idx} className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-semibold whitespace-nowrap">
-                {isAr ? (evt.playerNameAr || evt.playerAr || evt.playerName || evt.player || 'هدف') : (evt.playerName || evt.player || 'Goal')} ({evt.minute}')
-              </span>
-            ))}
-            {goalEvents.length > 4 && (
-              <span className="text-slate-500 font-bold">+{goalEvents.length - 4}</span>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Venue & Referee */}
-      <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-400">
-        <div className="flex items-center gap-1 truncate">
-          <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-          <span className="truncate">{isAr ? match.venueAr || match.venue : match.venue}</span>
-        </div>
-        {(match.refereeAr || match.referee) && (
-          <div className="flex items-center gap-1 shrink-0">
-            <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <span>{isAr ? match.refereeAr || match.referee : match.referee}</span>
-          </div>
-        )}
-      </div>
-
-      {/* Prediction State & Quick Actions */}
-      <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap sm:flex-nowrap">
-        {userPred ? (
-          <div className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-xl border flex-wrap ${
-            isExactPrediction
-              ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-700 dark:text-emerald-300'
-              : 'bg-slate-100 dark:bg-slate-800/70 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
-          }`}>
-            <CheckCircle2 className={`w-4 h-4 shrink-0 ${isExactPrediction ? 'text-emerald-500' : 'text-slate-400'}`} />
-            <span>{isAr ? 'توقعك للمباراة:' : 'Your Prediction:'}</span>
-            <div className="inline-flex items-center gap-1 font-mono font-black text-amber-600 dark:text-amber-300">
-              <span>{isAr ? (match.homeTeamAr || match.homeTeam) : match.homeTeam}</span>
-              <span className="text-emerald-500 font-bold">{userPred.predictedHomeScore}</span>
-              <span className="text-slate-400">-</span>
-              <span className="text-teal-500 font-bold">{userPred.predictedAwayScore}</span>
-              <span>{isAr ? (match.awayTeamAr || match.awayTeam) : match.awayTeam}</span>
-            </div>
-            {isExactPrediction && (
-              <span className="text-[10px] font-black px-1.5 py-0.2 rounded bg-emerald-500 text-white shadow-xs">
-                +{coinsReward} 🪙
-              </span>
-            )}
-          </div>
-        ) : isFinished ? (
-          <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400 bg-slate-100 dark:bg-slate-900/60 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800">
-            <span className="text-rose-500 font-bold">❌</span>
-            <span>{isAr ? 'لم تقم بالتوقع لهذا الماتش' : 'You did not predict this match'}</span>
-          </div>
-        ) : (
-          <button
-            onClick={() => onOpenDetails && onOpenDetails(match, 'predict')}
-            className="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 via-emerald-600 to-teal-600 hover:from-amber-400 hover:to-emerald-500 text-white font-black text-xs shadow-md transition-transform active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
-          >
-            <span>🎯</span>
-            <span>
-              {isAr ? `توقع النتيجة واربح ${coinsReward} كوينز 🪙` : `Predict & Win ${coinsReward} Coins 🪙`}
-            </span>
-          </button>
-        )}
-
-        <button
-          onClick={() => onOpenDetails && onOpenDetails(match, isFinished ? 'stats' : 'lineup')}
-          className={`py-2 px-3 rounded-xl border text-xs font-bold transition-colors shrink-0 cursor-pointer ${
-            isDark
-              ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200'
-              : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-800'
-          }`}
-        >
-          {isFinished ? (isAr ? 'الإحصائيات والنتيجة' : 'Stats & Summary') : (isAr ? 'التشكيل والتفاصيل' : 'Lineups & Info')}
-        </button>
-      </div>
-    </div>
+    <MatchCard
+      match={match}
+      language={language}
+      theme={theme}
+      isFavorite={false}
+      onToggleFavorite={() => {}}
+      userPrediction={userPred}
+      onOpenDetails={(m, tab) => onOpenDetails && onOpenDetails(m, tab)}
+    />
   );
 };
 
@@ -368,8 +40,8 @@ interface FeaturedTournamentsProps {
   onSavePrediction?: (match: Match, homeScore: number, awayScore: number) => void;
   onOpenRewards?: () => void;
   onClose?: () => void;
-  onGoogleSync?: () => void;
-  isSyncingGoogle?: boolean;
+  onFootballSync?: () => void;
+  isSyncingFootball?: boolean;
 }
 
 export const FeaturedTournaments: React.FC<FeaturedTournamentsProps> = ({
@@ -381,8 +53,8 @@ export const FeaturedTournaments: React.FC<FeaturedTournamentsProps> = ({
   onSavePrediction,
   onOpenRewards,
   onClose,
-  onGoogleSync,
-  isSyncingGoogle = false,
+  onFootballSync,
+  isSyncingFootball = false,
 }) => {
   const isAr = language === 'ar';
   const isDark = theme === 'dark';
@@ -390,12 +62,16 @@ export const FeaturedTournaments: React.FC<FeaturedTournamentsProps> = ({
   // Sub-tab filter state: 'all' | 'ongoing' | 'finished'
   const [filterTab, setFilterTab] = useState<'all' | 'ongoing' | 'finished'>('all');
 
+  const visibleTournamentMatches = useMemo(() => {
+    return tournamentMatches;
+  }, [tournamentMatches]);
+
   // Segregate matches into Ongoing and Finished
   const { ongoingMatches, finishedMatches } = useMemo(() => {
     const ongoing: Match[] = [];
     const finished: Match[] = [];
 
-    tournamentMatches.forEach((m) => {
+    visibleTournamentMatches.forEach((m) => {
       const isFin = m.status === 'FINISHED' || m.pointsDistributed === true;
       if (isFin) {
         finished.push(m);
@@ -405,7 +81,7 @@ export const FeaturedTournaments: React.FC<FeaturedTournamentsProps> = ({
     });
 
     return { ongoingMatches: ongoing, finishedMatches: finished };
-  }, [tournamentMatches]);
+  }, [visibleTournamentMatches]);
 
   return (
     <div className="space-y-5 animate-fadeIn pb-16 pt-1">
@@ -526,7 +202,7 @@ export const FeaturedTournaments: React.FC<FeaturedTournamentsProps> = ({
           <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
             filterTab === 'all' ? 'bg-white/25 text-white' : isDark ? 'bg-slate-800 text-slate-300' : 'bg-slate-200 text-slate-700'
           }`}>
-            {tournamentMatches.length}
+            {visibleTournamentMatches.length}
           </span>
         </button>
 
@@ -693,7 +369,7 @@ export const FeaturedTournaments: React.FC<FeaturedTournamentsProps> = ({
       )}
 
       {/* Global Empty State if absolutely no matches exist at all */}
-      {tournamentMatches.length === 0 && (
+      {visibleTournamentMatches.length === 0 && (
         <div className={`p-8 rounded-3xl border text-center space-y-3 ${
           isDark ? 'bg-slate-900/80 border-slate-800 text-slate-400' : 'bg-white border-slate-200 text-slate-600 shadow-sm'
         }`}>

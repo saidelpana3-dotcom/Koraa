@@ -105,6 +105,15 @@ export const LEAGUES: League[] = [
     flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿',
     badge: '🏆',
   },
+  {
+    id: 'superlig',
+    name: 'Süper Lig',
+    nameAr: 'الدوري التركي',
+    country: 'Turkey',
+    countryAr: 'تركيا',
+    flag: '🇹🇷',
+    badge: '🇹🇷',
+  },
 ];
 
 /**

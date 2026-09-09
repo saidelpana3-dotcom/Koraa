@@ -3,7 +3,8 @@ import { Match, Language } from '../types';
 import { PitchView } from './PitchView';
 import { TeamLogo } from './TeamLogo';
 import { generateFinishedMatchStats } from '../lib/matchStatsGenerator';
-import { updateMatchResultInCloud } from '../lib/matchCloudSync';
+import { isMatchLive, getMatchPlayedMinute } from '../data/matchHelpers';
+import { getOfficialTeamRoster } from '../data/teamRosters';
 import { 
   X, 
   Shield, 
@@ -33,6 +34,7 @@ interface MatchDetailsModalProps {
   existingPrediction?: { predictedHomeScore: number; predictedAwayScore: number };
   isSubscribed?: boolean;
   onOpenSubscribeModal?: (match: Match) => void;
+  userPoints?: number;
 }
 
 export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
@@ -45,20 +47,23 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
   existingPrediction,
   isSubscribed,
   onOpenSubscribeModal,
+  userPoints = 0,
 }) => {
   const isAr = language === 'ar';
+  const isLive = isMatchLive(match);
+  const isFinished = match.status === 'FINISHED' || match.pointsDistributed === true;
+  const isUpcoming = !isFinished && !isLive && match.status === 'UPCOMING' && (!match.kickoffTimeMs || Date.now() < match.kickoffTimeMs);
+  const playedMinute = getMatchPlayedMinute(match, isAr);
   const [activeTab, setActiveTab] = useState<'lineup' | 'stats' | 'events' | 'ai' | 'predict'>(initialTab);
+  const [showFeeConfirmation, setShowFeeConfirmation] = useState<boolean>(false);
 
   // Lock background body scroll while modal is open
   useEffect(() => {
     const prevOverflow = document.body.style.overflow;
-    const prevTouchAction = document.body.style.touchAction;
     document.body.style.overflow = 'hidden';
-    document.body.style.touchAction = 'none';
 
     return () => {
-      document.body.style.overflow = prevOverflow;
-      document.body.style.touchAction = prevTouchAction;
+      document.body.style.overflow = prevOverflow || '';
     };
   }, []);
 
@@ -73,59 +78,50 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
   const [predAwayScore, setPredAwayScore] = useState<number>(() => existingPrediction ? existingPrediction.predictedAwayScore : 0);
   const [predictionSaved, setPredictionSaved] = useState<boolean>(false);
 
-  // Admin / Publisher Result Broadcast State
-  const [adminHomeScore, setAdminHomeScore] = useState<number>(() => match.homeScore !== undefined ? match.homeScore : 0);
-  const [adminAwayScore, setAdminAwayScore] = useState<number>(() => match.awayScore !== undefined ? match.awayScore : 0);
-  const [adminStatus, setAdminStatus] = useState<'FINISHED' | 'LIVE' | 'UPCOMING'>(() => match.status || 'FINISHED');
-  const [isPublishingResult, setIsPublishingResult] = useState<boolean>(false);
-  const [publishSuccessMsg, setPublishSuccessMsg] = useState<string | null>(null);
+  // API-Football Live Events and Stats State
+  const [isSyncingEvents, setIsSyncingEvents] = useState<boolean>(false);
+  const [apiEventsList, setApiEventsList] = useState<any[]>([]);
+  const [apiSyncedTime, setApiSyncedTime] = useState<string | null>(null);
+  const [apiFootballData, setApiFootballData] = useState<any | null>(null);
 
-  useEffect(() => {
-    if (match.homeScore !== undefined) setAdminHomeScore(match.homeScore);
-    if (match.awayScore !== undefined) setAdminAwayScore(match.awayScore);
-    if (match.status) setAdminStatus(match.status);
-  }, [match.id, match.homeScore, match.awayScore, match.status]);
-
-  // Google Match Events Search Grounding State
-  const [isSyncingGoogleEvents, setIsSyncingGoogleEvents] = useState<boolean>(false);
-  const [googleCommentary, setGoogleCommentary] = useState<string | null>(null);
-  const [googleEventsList, setGoogleEventsList] = useState<any[]>([]);
-  const [googleSources, setGoogleSources] = useState<any[]>([]);
-  const [googleSyncedTime, setGoogleSyncedTime] = useState<string | null>(null);
-
-  const handleSyncEventsWithGoogle = async () => {
-    setIsSyncingGoogleEvents(true);
+  const handleSyncEventsWithApiFootball = async () => {
+    setIsSyncingEvents(true);
     try {
-      const res = await fetch('/api/google/sync-match-events', {
+      const apiRes = await fetch('/api/football/match-live-details', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          matchId: match.id,
           homeTeam: match.homeTeam,
           awayTeam: match.awayTeam,
-          leagueName: match.leagueName || match.leagueNameAr,
-          matchId: match.id,
-          language,
+          homeTeamAr: match.homeTeamAr,
+          awayTeamAr: match.awayTeamAr,
+          leagueName: match.leagueName,
+          status: match.status,
+          minute: playedMinute,
+          homeScore: match.homeScore,
+          awayScore: match.awayScore,
         }),
       });
-      const result = await res.json();
-      if (result.success && result.data) {
-        if (result.data.liveCommentary) {
-          setGoogleCommentary(result.data.liveCommentary);
+      const apiData = await apiRes.json();
+      if (apiData.success) {
+        setApiFootballData(apiData);
+        if (Array.isArray(apiData.events) && apiData.events.length > 0) {
+          setApiEventsList(apiData.events);
         }
-        if (Array.isArray(result.data.events) && result.data.events.length > 0) {
-          setGoogleEventsList(result.data.events);
-        }
-        if (Array.isArray(result.sources)) {
-          setGoogleSources(result.sources);
-        }
-        setGoogleSyncedTime(new Date().toLocaleTimeString(isAr ? 'ar-EG' : 'en-US'));
+        setApiSyncedTime(new Date().toLocaleTimeString(isAr ? 'ar-EG' : 'en-US'));
       }
     } catch (err) {
-      console.warn('Google match events sync fallback:', err);
+      console.warn('API-Football events query notice:', err);
     } finally {
-      setIsSyncingGoogleEvents(false);
+      setIsSyncingEvents(false);
     }
   };
+
+  // Auto-fetch details from API-Football on open (lineups for upcoming, events/scores for live/finished)
+  useEffect(() => {
+    handleSyncEventsWithApiFootball();
+  }, [match.id, match.status]);
 
   useEffect(() => {
     if (existingPrediction) {
@@ -220,9 +216,13 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                 {isAr ? (match.dateAr || match.date) : match.date}{match.status === 'UPCOMING' ? ` • ${match.time}` : ''}
               </span>
             </div>
-            {match.status === 'LIVE' && (
+            {isLive && (
               <span className="px-2 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-400 font-black text-[10px] animate-pulse shrink-0">
-                {isAr ? 'مباشر الآن 🔴' : 'LIVE 🔴'}
+                {isAr
+                  ? playedMinute.includes('بين') || playedMinute.includes('HT')
+                    ? playedMinute
+                    : `مباشر (${playedMinute}) 🔴`
+                  : `LIVE (${playedMinute}) 🔴`}
               </span>
             )}
           </div>
@@ -287,12 +287,6 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
             <span className="truncate max-w-[120px] sm:max-w-none">{isAr ? match.leagueNameAr : match.leagueName}</span>
             <span className="text-slate-600">•</span>
             <span className="text-slate-300 font-bold">{isAr ? (match.dateAr || match.date) : match.date}{match.status === 'UPCOMING' ? ` ، ${match.time}` : ''}</span>
-            {match.isGoogleSynced && (
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full bg-blue-500/20 border border-blue-500/40 text-blue-300 font-extrabold text-[9px]">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></span>
-                <span>{isAr ? 'نتائج جوجل 🔴' : 'Google Live 🔴'}</span>
-              </span>
-            )}
           </div>
 
           {/* Teams & Score */}
@@ -317,7 +311,7 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
 
             {/* Score */}
             <div className="col-span-1 flex flex-col items-center justify-center">
-              {match.status === 'UPCOMING' ? (
+              {isUpcoming ? (
                 <div className="px-2 py-1 bg-slate-800/95 rounded-lg text-amber-400 text-xs sm:text-sm font-black tracking-wider border border-slate-700">
                   {match.time}
                 </div>
@@ -328,13 +322,17 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                   <span>{match.awayScore}</span>
                 </div>
               )}
-              {match.status === 'LIVE' && (
+              {isLive && (
                 <span className="mt-1 text-[9px] sm:text-[10px] font-bold text-emerald-400 animate-pulse bg-emerald-500/10 px-1.5 py-0.2 rounded-full border border-emerald-500/30">
-                  {match.minute}' LIVE
+                  {isAr
+                    ? playedMinute.includes('بين') || playedMinute.includes('HT')
+                      ? playedMinute
+                      : `د ${playedMinute.replace("'", '')}`
+                    : `${playedMinute} LIVE`}
                 </span>
               )}
               {/* User prediction or unpredicted notice right under live or final score */}
-              {existingPrediction && match.status !== 'UPCOMING' ? (
+              {existingPrediction && !isUpcoming ? (
                 <div className={`mt-1.5 px-2.5 py-0.5 rounded-lg text-[9px] sm:text-[10px] font-black border shadow-xs whitespace-nowrap flex items-center justify-center gap-1.5 ${
                   match.status === 'FINISHED'
                     ? (match.homeScore === existingPrediction.predictedHomeScore && match.awayScore === existingPrediction.predictedAwayScore)
@@ -458,9 +456,9 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
           </button>
         </div>
 
-        {/* Tab Body Content with strict touch scroll containment */}
+        {/* Tab Body Content with fluid scrolling */}
         <div 
-          className="p-3.5 sm:p-6 overflow-y-auto overscroll-contain flex-1 text-slate-200 touch-pan-y"
+          className="p-3.5 sm:p-6 pb-6 overflow-y-auto flex-1 text-slate-200"
           style={{ WebkitOverflowScrolling: 'touch' }}
         >
           
@@ -470,11 +468,11 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
               homeTeamName={match.homeTeam}
               homeTeamNameAr={match.homeTeamAr}
               homeColor={match.homeColor}
-              homeLineup={match.homeLineup}
+              homeLineup={apiFootballData?.homeLineup || match.homeLineup || getOfficialTeamRoster(match.homeTeamAr || match.homeTeam)}
               awayTeamName={match.awayTeam}
               awayTeamNameAr={match.awayTeamAr}
               awayColor={match.awayColor}
-              awayLineup={match.awayLineup}
+              awayLineup={apiFootballData?.awayLineup || match.awayLineup || getOfficialTeamRoster(match.awayTeamAr || match.awayTeam)}
               language={language}
               leagueName={match.leagueNameAr || match.leagueName}
               matchId={match.id}
@@ -482,121 +480,165 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
           )}
 
           {/* TAB 2: Match Events Timeline */}
-          {activeTab === 'events' && (
-            <div className="space-y-4 max-w-2xl mx-auto">
-              {/* Google Live Search Integration Banner */}
-              <div className="p-4 bg-gradient-to-r from-blue-950/80 via-slate-900 to-indigo-950/80 rounded-2xl border border-blue-500/40 shadow-lg space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="flex h-2.5 w-2.5 relative">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500"></span>
-                    </span>
-                    <span className="font-extrabold text-xs sm:text-sm text-blue-300">
-                      {isAr ? 'مربوط بـ نتائج جوجل المباشرة (Google Search Grounding)' : 'Connected with Google Search Live Scores'}
-                    </span>
-                  </div>
+          {activeTab === 'events' && (() => {
+            // Aggregate, deduplicate, and normalize all events from API and curated data
+            const rawEvents = [...apiEventsList, ...(match.events || [])];
+            const dedupMap = new Map<string, any>();
+            rawEvents.forEach((ev, idx) => {
+              if (!ev) return;
+              const min = ev.minute ?? 0;
+              const p = ev.playerNameAr || ev.playerAr || ev.playerName || ev.player || ev.nameAr || ev.name || `evt_${idx}`;
+              const t = ev.type || 'EVENT';
+              const key = `${min}_${t}_${p}`;
+              if (!dedupMap.has(key)) {
+                dedupMap.set(key, ev);
+              }
+            });
 
-                  <button
-                    onClick={handleSyncEventsWithGoogle}
-                    disabled={isSyncingGoogleEvents}
-                    className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-extrabold text-xs flex items-center gap-1.5 border border-blue-300/40 cursor-pointer shadow-md transition-all active:scale-95"
-                  >
-                    <Sparkles className={`w-3.5 h-3.5 text-cyan-200 ${isSyncingGoogleEvents ? 'animate-spin' : ''}`} />
-                    <span>
-                      {isSyncingGoogleEvents
-                        ? (isAr ? 'جاري البحث بـ Google...' : 'Searching Google...')
-                        : (isAr ? 'جلب أحدث الأحداث من جوجل 🔴' : 'Fetch Google Events 🔴')}
-                    </span>
-                  </button>
-                </div>
+            const sortedEvents = Array.from(dedupMap.values()).sort((a, b) => (a.minute ?? 0) - (b.minute ?? 0));
 
-                {googleSyncedTime && (
-                  <p className="text-[11px] text-cyan-300 font-semibold">
-                    {isAr ? `✓ تم جلب أحداث جوجل المباشرة بنجاح عند: ${googleSyncedTime}` : `✓ Google Live Events fetched at: ${googleSyncedTime}`}
-                  </p>
-                )}
-
-                {googleCommentary && (
-                  <div className="p-3 bg-slate-950/90 rounded-xl border border-blue-500/30 text-xs sm:text-sm text-slate-200 font-medium leading-relaxed">
-                    <span className="font-black text-cyan-400 block mb-1">
-                      {isAr ? '🎙️ تغطية جوجل المباشرة:' : '🎙️ Live Coverage from Google:'}
+            return (
+              <div className="space-y-4 max-w-2xl mx-auto">
+                {isLive && (
+                  <div className="flex items-center justify-between gap-2 p-3 bg-emerald-950/50 border border-emerald-500/40 rounded-xl text-emerald-300 text-xs font-bold shadow-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping shrink-0" />
+                      <span>{isAr ? '🔴 بث مباشر للأحداث (الوقت الفعلي)' : '🔴 Live Match Events (Real-Time)'}</span>
+                    </div>
+                    <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-md font-mono font-black text-xs border border-emerald-500/30">
+                      {isAr
+                        ? playedMinute.includes('بين') || playedMinute.includes('HT')
+                          ? playedMinute
+                          : `د ${playedMinute.replace("'", '')}`
+                        : playedMinute}
                     </span>
-                    {googleCommentary}
                   </div>
                 )}
 
-                {googleSources.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <span className="text-[10px] text-slate-400 font-bold">{isAr ? 'مصادر نتائج جوجل الموثوقة:' : 'Google Sources:'}</span>
-                    {googleSources.map((src, idx) => (
-                      <a
-                        key={idx}
-                        href={src.uri}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[10px] bg-blue-500/10 text-blue-300 hover:text-blue-200 border border-blue-500/30 px-2 py-0.5 rounded-md truncate max-w-[180px]"
-                      >
-                        🌐 {src.title || src.uri}
-                      </a>
-                    ))}
+                {isUpcoming ? (
+                  <div className="p-8 text-center text-slate-400 bg-slate-950/60 rounded-2xl border border-slate-800">
+                    <Clock className="w-10 h-10 mx-auto mb-3 text-amber-400/90 animate-pulse" />
+                    <h4 className="font-extrabold text-white text-base mb-1">
+                      {isAr ? 'المباراة مرتقبة' : 'Match Upcoming'}
+                    </h4>
+                    <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                      {isAr
+                        ? `تنطلق المباراة في تمام الساعة ${match.time}. ستظهر هنا جميع الأهداف، والبطاقات، والتبديلات، وأحداث اللقاء فور انطلاق صافرة البداية مع التحديث المباشر.`
+                        : `Kickoff scheduled for ${match.time}. All live goals, cards, substitutions, and events will appear here in real time.`}
+                    </p>
+                  </div>
+                ) : sortedEvents.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400 bg-slate-950/60 rounded-2xl border border-slate-800">
+                    <Clock className="w-8 h-8 mx-auto mb-2 text-slate-500" />
+                    <p className="font-medium text-sm text-slate-300">
+                      {isAr ? 'لا توجد أحداث مسجلة بعد في هذه المباراة.' : 'No events recorded yet for this match.'}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {isAr ? 'يتم تحديث مجريات اللقاء والإنذارات والأهداف تباعاً.' : 'Match events and stats update as the game unfolds.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="relative border-l-2 border-slate-800 rtl:border-l-0 rtl:border-r-2 ml-4 rtl:ml-0 rtl:mr-4 space-y-4">
+                    {sortedEvents.map((evt, idx) => {
+                      const isHome =
+                        evt.team === 'HOME' ||
+                        evt.team === 'home' ||
+                        evt.team === match.homeTeam ||
+                        evt.team === match.homeTeamAr;
+
+                      const playerNameDisplay = isAr
+                        ? (evt.playerNameAr || evt.playerAr || evt.nameAr || evt.playerName || evt.player || evt.name || 'لاعب')
+                        : (evt.playerName || evt.player || evt.name || evt.playerNameAr || evt.playerAr || evt.nameAr || 'Player');
+
+                      const assistDisplay = isAr
+                        ? (evt.assistAr || evt.assist)
+                        : (evt.assist || evt.assistAr);
+
+                      const detailDisplay = isAr
+                        ? (evt.detailAr || evt.detail)
+                        : (evt.detail || evt.detailAr);
+
+                      const isGoal = evt.type === 'GOAL' || evt.type === 'PENALTY_GOAL' || evt.type === 'OWN_GOAL';
+
+                      return (
+                        <div key={evt.id || idx} className="relative pl-6 rtl:pl-0 rtl:pr-6 flex items-start gap-3">
+                          <span className={`absolute -left-3 rtl:-left-auto rtl:-right-3 top-1 w-6 h-6 rounded-full bg-slate-900 border-2 flex items-center justify-center text-[10px] font-mono font-bold shadow-md ${
+                            isGoal
+                              ? 'border-emerald-400 text-emerald-400'
+                              : evt.type === 'RED_CARD'
+                              ? 'border-rose-500 text-rose-400'
+                              : evt.type === 'YELLOW_CARD'
+                              ? 'border-amber-400 text-amber-300'
+                              : 'border-slate-600 text-slate-400'
+                          }`}>
+                            {evt.minute}'
+                          </span>
+
+                          <div className={`border rounded-xl p-3.5 flex-1 flex items-center justify-between shadow-md transition-all ${
+                            isGoal
+                              ? 'bg-emerald-950/40 border-emerald-500/50 shadow-emerald-950/30'
+                              : evt.type === 'RED_CARD'
+                              ? 'bg-rose-950/30 border-rose-500/50 shadow-rose-950/30'
+                              : 'bg-slate-950 border-slate-800'
+                          }`}>
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-black text-white text-sm sm:text-base">
+                                  {playerNameDisplay}
+                                </span>
+                                <span className="text-[11px] font-bold text-slate-400 bg-slate-900 px-2 py-0.5 rounded-md border border-slate-800">
+                                  {isHome ? (isAr ? match.homeTeamAr : match.homeTeam) : (isAr ? match.awayTeamAr : match.awayTeam)}
+                                </span>
+                                {evt.score && (
+                                  <span className="text-xs font-mono font-extrabold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
+                                    {evt.score}
+                                  </span>
+                                )}
+                              </div>
+
+                              {assistDisplay && (
+                                <p className="text-xs text-emerald-400/90 font-medium mt-1 flex items-center gap-1">
+                                  <span>👟</span>
+                                  <span>{isAr ? `صناعة: ${assistDisplay}` : `Assist: ${assistDisplay}`}</span>
+                                </p>
+                              )}
+
+                              {detailDisplay && (
+                                <p className="text-xs text-slate-400 mt-1">
+                                  {detailDisplay}
+                                </p>
+                              )}
+                            </div>
+
+                            <div className="text-2xl shrink-0 ps-3 rtl:ps-0 rtl:pe-3">
+                              {(evt.type === 'GOAL' || evt.type === 'PENALTY_GOAL') && '⚽'}
+                              {evt.type === 'OWN_GOAL' && '⚽ (عكسي)'}
+                              {evt.type === 'YELLOW_CARD' && '🟨'}
+                              {evt.type === 'RED_CARD' && '🟥'}
+                              {evt.type === 'SUBSTITUTION' && '🔄'}
+                              {evt.type === 'VAR' && '🖥️'}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
-
-              {(!match.events || match.events.length === 0) && googleEventsList.length === 0 ? (
-                <div className="p-8 text-center text-slate-400 bg-slate-950/60 rounded-2xl border border-slate-800">
-                  <Clock className="w-8 h-8 mx-auto mb-2 text-slate-500" />
-                  <p>{isAr ? 'اضغط على زر جلب الأحداث أعلى لتحديث مجريات الماتش من جوجل.' : 'Click "Fetch Google Events" above to load match timeline.'}</p>
-                </div>
-              ) : (
-                <div className="relative border-l-2 border-slate-800 rtl:border-l-0 rtl:border-r-2 ml-4 rtl:ml-0 rtl:mr-4 space-y-6">
-                  {[...googleEventsList, ...(match.events || [])].map((evt, idx) => {
-                    const isHome = evt.team === 'HOME';
-                    return (
-                      <div key={evt.id || idx} className="relative pl-6 rtl:pl-0 rtl:pr-6 flex items-start gap-3">
-                        <span className="absolute -left-2.5 rtl:-left-auto rtl:-right-2.5 top-0 w-5 h-5 rounded-full bg-slate-900 border-2 border-emerald-500 flex items-center justify-center text-[10px] font-mono font-bold text-emerald-400">
-                          {evt.minute}'
-                        </span>
-                        
-                        <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex-1 flex items-center justify-between shadow-md">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="font-extrabold text-white text-sm">
-                                {isAr ? (evt.playerNameAr || evt.playerName) : evt.playerName}
-                              </span>
-                              <span className="text-[11px] font-semibold text-slate-400">
-                                ({isHome ? (isAr ? match.homeTeamAr : match.homeTeam) : (isAr ? match.awayTeamAr : match.awayTeam)})
-                              </span>
-                            </div>
-                            {evt.detail && (
-                              <p className="text-xs text-slate-400 mt-0.5">
-                                {isAr ? evt.detailAr || evt.detail : evt.detail}
-                              </p>
-                            )}
-                          </div>
-
-                          <div className="text-xl">
-                            {evt.type === 'GOAL' && '⚽'}
-                            {evt.type === 'YELLOW_CARD' && '🟨'}
-                            {evt.type === 'RED_CARD' && '🟥'}
-                            {evt.type === 'SUBSTITUTION' && '🔄'}
-                            {evt.type === 'VAR' && '🖥️'}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
+            );
+          })()}
 
           {/* TAB 3: Comprehensive Live & Post-Match Stats */}
           {activeTab === 'stats' && (() => {
-            const stats = match.status === 'FINISHED'
-              ? (match.stats?.manOfTheMatch ? match.stats : generateFinishedMatchStats(match))
-              : (match.stats || generateFinishedMatchStats(match));
+            const hasRealData = (s?: any): boolean =>
+              s &&
+              ((s.possession?.[0] > 0 || s.possession?.[1] > 0) ||
+               (s.shotsTotal?.[0] > 0 || s.shotsTotal?.[1] > 0));
+
+            const stats = 
+              (hasRealData(apiFootballData?.stats) ? apiFootballData.stats : null) ||
+              (hasRealData(match.stats) ? match.stats : null) ||
+              generateFinishedMatchStats(match);
 
             const isFinished = match.status === 'FINISHED';
             const motm = stats.manOfTheMatch;
@@ -1010,11 +1052,34 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                 </div>
               ) : (
                 /* Exact Score Predictor Section */
-                <div className="p-3.5 sm:p-4 bg-gradient-to-b from-slate-950 to-slate-900 rounded-2xl border border-amber-500/40 shadow-xl space-y-3">
-                  <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-black">
-                    <span className="animate-pulse">✨</span>
-                    <span>{isAr ? `توقع النتيجة الدقيقة واكسب +${coinsReward} كوينز لرصيدك` : `Predict Exact Score (+${coinsReward} Coins)`}</span>
+                <div className="p-3.5 sm:p-4 bg-gradient-to-b from-slate-950 to-slate-900 rounded-2xl border border-amber-500/40 shadow-xl space-y-3 relative">
+                  {/* Fee & Reward Badges */}
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-black">
+                      <span className="animate-pulse">✨</span>
+                      <span>{isAr ? `توقع النتيجة واكسب +${coinsReward} كوينز لرصيدك` : `Predict Exact Score (+${coinsReward} Coins)`}</span>
+                    </div>
+
+                    {match.predictionFeeCoins && (
+                      <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[11px] font-black">
+                        <span>🪙</span>
+                        <span>{isAr ? `رسوم التوقع: ${match.predictionFeeCoins} كوينز` : `Fee: ${match.predictionFeeCoins} Coins`}</span>
+                      </div>
+                    )}
                   </div>
+
+                  {/* Balance Status Banner if match has fee */}
+                  {match.predictionFeeCoins && !existingPrediction && (
+                    <div className="p-2.5 bg-amber-950/40 rounded-xl border border-amber-500/30 flex items-center justify-between text-xs font-bold text-amber-200">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm">💰</span>
+                        <span>{isAr ? 'رصيدك الحالي من الكوينز:' : 'Your Coins Balance:'}</span>
+                      </div>
+                      <span className="font-mono font-black text-amber-400 text-sm">
+                        {userPoints} 🪙
+                      </span>
+                    </div>
+                  )}
 
                   <h4 className="font-extrabold text-white text-sm sm:text-base">
                     {isAr ? 'ما هي نتيجة المباراة المتوقعة؟' : 'Enter Predicted Score'}
@@ -1083,13 +1148,17 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                   {/* Submit / Edit Prediction Button */}
                   <button
                     onClick={() => {
-                      if (onSavePrediction) {
-                        onSavePrediction(match, predHomeScore, predAwayScore);
+                      if (match.predictionFeeCoins && !existingPrediction) {
+                        setShowFeeConfirmation(true);
+                      } else {
+                        if (onSavePrediction) {
+                          onSavePrediction(match, predHomeScore, predAwayScore);
+                        }
+                        setPredictionSaved(true);
+                        setTimeout(() => {
+                          onClose();
+                        }, 400);
                       }
-                      setPredictionSaved(true);
-                      setTimeout(() => {
-                        onClose();
-                      }, 400);
                     }}
                     className={`w-full py-2.5 px-4 rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer active:scale-98 ${
                       predictionSaved
@@ -1103,9 +1172,88 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                         ? (isAr ? '✓ تم حفظ توقعك بنجاح!' : '✓ Prediction Saved!')
                         : existingPrediction
                         ? (isAr ? 'تعديل وحفظ التوقع 🎯' : 'Update Prediction 🎯')
+                        : match.predictionFeeCoins
+                        ? (isAr ? `توقع الآن (خصم ${match.predictionFeeCoins} كوينز - الجائزة ${coinsReward} كوينز) 🎯` : `Predict (Fee: ${match.predictionFeeCoins} Coins - Win ${coinsReward}) 🎯`)
                         : (isAr ? `سجل توقعك الآن (+${coinsReward} كوينز عند صحة النتيجة) 🎯` : `Submit Prediction (+${coinsReward} Coins) 🎯`)}
                     </span>
                   </button>
+
+                  {/* Confirmation Modal for Coin Deduction */}
+                  {showFeeConfirmation && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
+                      <div className="bg-slate-900 border-2 border-amber-500/60 rounded-2xl p-5 max-w-sm w-full text-center space-y-4 shadow-2xl">
+                        <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 text-amber-400 flex items-center justify-center mx-auto text-2xl shadow-inner">
+                          🪙
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <h3 className="text-base font-black text-white">
+                            {isAr ? 'هل أنت متأكد من إنفاق 50 كوينز علي التوقع؟' : 'Are you sure you want to spend 50 coins to predict?'}
+                          </h3>
+                          <p className="text-xs text-slate-300 leading-relaxed font-bold">
+                            {isAr
+                              ? 'سيتم خصم 50 كوينز من رصيدك فوراً. وفي حال كانت نتيجة توقعك صحيحة تماماً ستكسب 150 كوينز في محفظتك! 🏆'
+                              : '50 coins will be deducted from your wallet. Exact correct score awards you 150 coins! 🏆'}
+                          </p>
+                        </div>
+
+                        {/* Balance Breakdown */}
+                        <div className="p-3 bg-slate-950/90 rounded-xl border border-slate-800 space-y-1 text-xs">
+                          <div className="flex items-center justify-between text-slate-300 font-bold">
+                            <span>{isAr ? 'رصيدك الحالي:' : 'Current Balance:'}</span>
+                            <span className="font-mono font-black text-amber-400">{userPoints} 🪙</span>
+                          </div>
+                          <div className="flex items-center justify-between text-rose-300 font-bold">
+                            <span>{isAr ? 'رسوم التوقع (خصم):' : 'Prediction Fee:'}</span>
+                            <span className="font-mono font-black text-rose-400">-50 🪙</span>
+                          </div>
+                          <div className="h-px bg-slate-800 my-1" />
+                          <div className="flex items-center justify-between text-emerald-300 font-black">
+                            <span>{isAr ? 'الجائزة عند الفوز:' : 'Reward on Win:'}</span>
+                            <span className="font-mono font-black text-emerald-400">+150 🪙</span>
+                          </div>
+                        </div>
+
+                        {userPoints < 50 ? (
+                          <div className="p-2.5 bg-rose-950/60 rounded-xl border border-rose-500/40 text-xs font-black text-rose-300">
+                            {isAr
+                              ? `⚠️ رصيدك غير كافٍ (لديك ${userPoints} كوينز، المطلوب 50 كوينز).`
+                              : `⚠️ Insufficient balance (You have ${userPoints} coins, 50 needed).`}
+                          </div>
+                        ) : null}
+
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            onClick={() => setShowFeeConfirmation(false)}
+                            className="flex-1 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs cursor-pointer active:scale-95 transition-all"
+                          >
+                            {isAr ? 'إلغاء' : 'Cancel'}
+                          </button>
+
+                          <button
+                            disabled={userPoints < 50}
+                            onClick={() => {
+                              setShowFeeConfirmation(false);
+                              if (onSavePrediction) {
+                                onSavePrediction(match, predHomeScore, predAwayScore);
+                              }
+                              setPredictionSaved(true);
+                              setTimeout(() => {
+                                onClose();
+                              }, 400);
+                            }}
+                            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs cursor-pointer active:scale-95 transition-all shadow-md ${
+                              userPoints < 50
+                                ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                                : 'bg-gradient-to-r from-amber-500 to-emerald-600 hover:from-amber-400 hover:to-emerald-500 text-white shadow-amber-950/40'
+                            }`}
+                          >
+                            {isAr ? 'موافق (خصم 50 كوينز)' : 'Confirm (Spend 50)'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1266,140 +1414,6 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                   <p className="text-[11px] font-semibold text-emerald-400 animate-fade-in pt-0.5">
                     ✓ {isAr ? 'شكراً لتصويتك! تم تسجيل رأيك بنجاح.' : 'Thank you! Your vote has been recorded.'}
                   </p>
-                )}
-              </div>
-
-              {/* SECTION: Global Match Result Broadcaster (تحديث النتيجة لجميع المستخدمين فوراً) */}
-              <div className="p-3.5 sm:p-4 bg-gradient-to-b from-slate-950 via-slate-900 to-indigo-950/80 rounded-2xl border-2 border-indigo-500/40 shadow-xl space-y-3 text-right rtl:text-right ltr:text-left">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 text-white font-extrabold text-xs sm:text-sm">
-                    <span className="text-base">📢</span>
-                    <span>{isAr ? 'إدارة وتحديث النتيجة لجميع المستخدمين' : 'Global Match Result Broadcaster'}</span>
-                  </div>
-                  <span className="text-[10px] text-indigo-300 font-black bg-indigo-500/20 px-2 py-0.5 rounded-full border border-indigo-500/40">
-                    {isAr ? 'تحديث سحابي مباشر 🌐' : 'Live Cloud Sync 🌐'}
-                  </span>
-                </div>
-
-                <p className="text-[11px] text-slate-300">
-                  {isAr 
-                    ? 'عند تعديل النتيجة هنا والضغط على الزر، سيتم حفظ النتيجة وتحديثها لجميع المستخدمين في نفس اللحظة واحتساب الـ ٥٠ كوينز للتوقعات الصحيحة فوراً دون الحاجة لإعادة نشر.' 
-                    : 'Updating the score here broadcasts the result globally to all users and evaluates 50 coins for winning predictions.'}
-                </p>
-
-                {/* Score Controls */}
-                <div className="grid grid-cols-7 items-center gap-2 py-2 bg-slate-950 p-2.5 rounded-xl border border-indigo-500/30">
-                  <div className="col-span-3 flex flex-col items-center gap-1">
-                    <span className="font-bold text-[11px] text-slate-200 line-clamp-1">{isAr ? match.homeTeamAr : match.homeTeam}</span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setAdminHomeScore(s => Math.max(0, s - 1))}
-                        className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 text-white font-black text-sm border border-slate-700 flex items-center justify-center cursor-pointer active:scale-95"
-                      >-</button>
-                      <span className="text-xl font-black font-mono text-emerald-400 w-6 text-center">{adminHomeScore}</span>
-                      <button
-                        type="button"
-                        onClick={() => setAdminHomeScore(s => s + 1)}
-                        className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 text-white font-black text-sm border border-slate-700 flex items-center justify-center cursor-pointer active:scale-95"
-                      >+</button>
-                    </div>
-                  </div>
-
-                  <div className="col-span-1 text-center font-black text-slate-500">:</div>
-
-                  <div className="col-span-3 flex flex-col items-center gap-1">
-                    <span className="font-bold text-[11px] text-slate-200 line-clamp-1">{isAr ? match.awayTeamAr : match.awayTeam}</span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setAdminAwayScore(s => Math.max(0, s - 1))}
-                        className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 text-white font-black text-sm border border-slate-700 flex items-center justify-center cursor-pointer active:scale-95"
-                      >-</button>
-                      <span className="text-xl font-black font-mono text-teal-400 w-6 text-center">{adminAwayScore}</span>
-                      <button
-                        type="button"
-                        onClick={() => setAdminAwayScore(s => s + 1)}
-                        className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 text-white font-black text-sm border border-slate-700 flex items-center justify-center cursor-pointer active:scale-95"
-                      >+</button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Match Status Selection */}
-                <div className="flex items-center justify-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setAdminStatus('FINISHED')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-black border transition-all cursor-pointer ${
-                      adminStatus === 'FINISHED'
-                        ? 'bg-emerald-600 border-emerald-400 text-white shadow-md'
-                        : 'bg-slate-900 border-slate-800 text-slate-400'
-                    }`}
-                  >
-                    {isAr ? 'مباراة منتهية (انتهت) 🏆' : 'Finished 🏆'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAdminStatus('LIVE')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-black border transition-all cursor-pointer ${
-                      adminStatus === 'LIVE'
-                        ? 'bg-rose-600 border-rose-400 text-white shadow-md'
-                        : 'bg-slate-900 border-slate-800 text-slate-400'
-                    }`}
-                  >
-                    {isAr ? 'مباشر الآن 🔴' : 'Live 🔴'}
-                  </button>
-                </div>
-
-                {/* Broadcast Button */}
-                <button
-                  type="button"
-                  disabled={isPublishingResult}
-                  onClick={async () => {
-                    setIsPublishingResult(true);
-                    setPublishSuccessMsg(null);
-                    try {
-                      const res = await updateMatchResultInCloud({
-                        matchId: match.id,
-                        homeScore: adminHomeScore,
-                        awayScore: adminAwayScore,
-                        status: adminStatus,
-                        isFinished: adminStatus === 'FINISHED',
-                        homeTeamAr: match.homeTeamAr,
-                        awayTeamAr: match.awayTeamAr,
-                        homeTeam: match.homeTeam,
-                        awayTeam: match.awayTeam,
-                      });
-                      if (res.success) {
-                        setPublishSuccessMsg(isAr ? '✓ تم نشر النتيجة بنجاح وتحديثها لجميع المستخدمين وتوزيع الكوينز!' : '✓ Match result broadcasted to all users & points evaluated!');
-                        setTimeout(() => setPublishSuccessMsg(null), 5000);
-                      }
-                    } catch (err: any) {
-                      console.error(err);
-                    } finally {
-                      setIsPublishingResult(false);
-                    }
-                  }}
-                  className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-indigo-600 via-blue-600 to-teal-600 hover:from-indigo-500 hover:to-teal-500 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg transition-all active:scale-98 cursor-pointer border border-indigo-400/50"
-                >
-                  {isPublishingResult ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin text-white" />
-                      <span>{isAr ? 'جاري النشر لجميع المستخدمين...' : 'Broadcasting to all users...'}</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>📢</span>
-                      <span>{isAr ? 'حفظ ونشر النتيجة لجميع المستخدمين فوراً 🚀' : 'Broadcast Result to All Users Now 🚀'}</span>
-                    </>
-                  )}
-                </button>
-
-                {publishSuccessMsg && (
-                  <div className="p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 font-extrabold text-xs text-center animate-fade-in">
-                    {publishSuccessMsg}
-                  </div>
                 )}
               </div>
             </div>

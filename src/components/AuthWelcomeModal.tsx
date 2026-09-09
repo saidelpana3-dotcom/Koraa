@@ -63,13 +63,14 @@ export const AuthWelcomeModal: React.FC<AuthWelcomeModalProps> = ({
       const result = await signInWithPopup(auth, googleProvider);
       const currentUser = result.user;
       
+      let isNewUser = false;
       try {
         // Check if user exists in Firestore safely
         const userRef = doc(db, 'users', currentUser.uid);
         const userSnap = await getDoc(userRef);
-        const isNew = !userSnap.exists();
+        isNewUser = !userSnap.exists();
 
-        if (isNew) {
+        if (isNewUser) {
           // New user: start with 0 points
           await setDoc(userRef, {
             displayName: currentUser.displayName || (isAr ? 'الكابتن' : 'Captain'),
@@ -88,7 +89,7 @@ export const AuthWelcomeModal: React.FC<AuthWelcomeModalProps> = ({
         console.warn('Firestore user profile sync notice:', dbErr);
       }
 
-      if (onSuccessLogin) onSuccessLogin(false);
+      if (onSuccessLogin) onSuccessLogin(isNewUser);
       onClose();
     } catch (err: any) {
       console.warn('Google auth response/error:', err?.code, err?.message);

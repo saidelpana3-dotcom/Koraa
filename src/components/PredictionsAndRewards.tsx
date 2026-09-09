@@ -6,10 +6,12 @@ import {
   setDoc, 
   collection, 
   getDocs,
-  query,
-  where,
-  handleFirestoreError,
-  OperationType
+  getDoc,
+  onSnapshot,
+  query, 
+  where, 
+  handleFirestoreError, 
+  OperationType 
 } from '../lib/firebase';
 import { 
   Award, 
@@ -27,6 +29,7 @@ import {
   History,
   ArrowRight
 } from 'lucide-react';
+import { isMatchRemovedGlobally } from '../utils/predictionEvaluator';
 
 interface PredictionsAndRewardsProps {
   matches: Match[];
@@ -40,28 +43,15 @@ interface PredictionsAndRewardsProps {
   onClose?: () => void;
 }
 
-// Cash & Wallet Prizes with Exclusive Limited-Time Discount Offers
+// Cash & Wallet Prizes with Official Coin Conversion Rates
 const CASH_PRIZES: Prize[] = [
-  {
-    id: 'cash-50',
-    title: '50 EGP Cash Transfer',
-    titleAr: '50 جنيه كاش (إنستاباي / محفظة)',
-    description: 'Instant 50 EGP cash payout sent directly to your InstaPay or mobile wallet.',
-    descriptionAr: 'تحويل كاش فوري بقيمة 50 جنيه إلى حساب إنستاباي أو المحفظة الإلكترونية.',
-    pointsCost: 400,
-    category: 'Cards',
-    categoryAr: 'كاش إنستاباي',
-    image: '💵',
-    stock: 250,
-    claimedCount: 310,
-  },
   {
     id: 'cash-100',
     title: '100 EGP Cash Transfer',
     titleAr: '100 جنيه كاش (إنستاباي / محفظة)',
     description: 'Instant 100 EGP cash payout sent directly to your InstaPay or mobile wallet.',
     descriptionAr: 'تحويل كاش فوري بقيمة 100 جنيه إلى حساب إنستاباي أو المحفظة الإلكترونية.',
-    pointsCost: 600,
+    pointsCost: 800,
     category: 'Cards',
     categoryAr: 'كاش إنستاباي',
     image: '💸',
@@ -74,7 +64,7 @@ const CASH_PRIZES: Prize[] = [
     titleAr: '150 جنيه كاش (إنستاباي / محفظة)',
     description: 'Instant 150 EGP cash payout sent directly to your InstaPay or mobile wallet.',
     descriptionAr: 'تحويل كاش فوري بقيمة 150 جنيه إلى حساب إنستاباي أو المحفظة الإلكترونية.',
-    pointsCost: 750,
+    pointsCost: 950,
     category: 'Cards',
     categoryAr: 'كاش إنستاباي',
     image: '💰',
@@ -87,7 +77,7 @@ const CASH_PRIZES: Prize[] = [
     titleAr: '200 جنيه كاش (إنستاباي / محفظة)',
     description: 'Instant 200 EGP cash payout sent directly to your InstaPay or mobile wallet.',
     descriptionAr: 'تحويل كاش فوري بقيمة 200 جنيه إلى حساب إنستاباي أو المحفظة الإلكترونية.',
-    pointsCost: 900,
+    pointsCost: 1500,
     category: 'Cards',
     categoryAr: 'كاش إنستاباي',
     image: '🤑',
@@ -100,11 +90,7 @@ const CASH_PRIZES: Prize[] = [
     titleAr: '350 جنيه كاش (إنستاباي / محفظة)',
     description: 'Instant 350 EGP cash payout sent directly to your InstaPay or mobile wallet.',
     descriptionAr: 'تحويل كاش فوري بقيمة 350 جنيه إلى حساب إنستاباي أو المحفظة الإلكترونية.',
-    pointsCost: 1200,
-    originalPointsCost: 1500,
-    isOffer: true,
-    badgeLabel: 'HOT OFFER 🔥',
-    badgeLabelAr: 'عرض خاص 🔥 بدل 1500',
+    pointsCost: 2000,
     category: 'Cards',
     categoryAr: 'كاش إنستاباي',
     image: '💎',
@@ -117,11 +103,7 @@ const CASH_PRIZES: Prize[] = [
     titleAr: '500 جنيه كاش (إنستاباي / محفظة)',
     description: 'Instant 500 EGP cash payout sent directly to your InstaPay or mobile wallet.',
     descriptionAr: 'تحويل كاش فوري بقيمة 500 جنيه إلى حساب إنستاباي أو المحفظة الإلكترونية.',
-    pointsCost: 1600,
-    originalPointsCost: 2000,
-    isOffer: true,
-    badgeLabel: 'SUPER OFFER 🔥',
-    badgeLabelAr: 'عرض خاص 🔥 بدل 2000',
+    pointsCost: 2500,
     category: 'Cards',
     categoryAr: 'كاش إنستاباي',
     image: '👑',
@@ -134,11 +116,7 @@ const CASH_PRIZES: Prize[] = [
     titleAr: '1000 جنيه كاش (إنستاباي / محفظة)',
     description: 'Instant 1,000 EGP VIP cash payout sent directly to your InstaPay or mobile wallet.',
     descriptionAr: 'تحويل كاش فوري فخم بقيمة 1000 جنيه إلى حساب إنستاباي أو المحفظة الإلكترونية.',
-    pointsCost: 2500,
-    originalPointsCost: 3200,
-    isOffer: true,
-    badgeLabel: 'MEGA VIP OFFER 🔥',
-    badgeLabelAr: 'عرض سوبر حصري 🔥 بدل 3200',
+    pointsCost: 5000,
     category: 'Cards',
     categoryAr: 'كاش إنستاباي',
     image: '🏆',
@@ -262,8 +240,12 @@ export const PredictionsAndRewards: React.FC<PredictionsAndRewardsProps> = ({
         try {
           const parsed = JSON.parse(savedPredsStr);
           if (Array.isArray(parsed)) {
-            count = parsed.length;
-            exactCount = parsed.filter((p: any) => p.status === 'EXACT_SCORE' || p.status === 'EXACT_WIN' || p.pointsEarned === 50).length;
+            const valid = parsed.filter((p: any) => {
+              const mId = p.matchId || p.id;
+              return !isMatchRemovedGlobally(mId);
+            });
+            count = valid.length;
+            exactCount = valid.filter((p: any) => p.status === 'EXACT_SCORE' || p.status === 'EXACT_WIN' || p.pointsEarned === 50).length;
           }
         } catch (e) {}
       }
@@ -275,18 +257,66 @@ export const PredictionsAndRewards: React.FC<PredictionsAndRewardsProps> = ({
     loadClaims();
     loadPredictionStats();
 
-    // Listen to profile and predictions updates
+    // Listen to profile, claims, and predictions updates
     const handleProfileUpdate = () => {
       loadPayoutProfile();
       loadClaims();
       loadPredictionStats();
     };
     window.addEventListener('kora_payout_profile_updated', handleProfileUpdate);
+    window.addEventListener('kora_predictions_updated', handleProfileUpdate);
+    window.addEventListener('kora_claims_updated', handleProfileUpdate);
+    window.addEventListener('kora_coins_updated', handleProfileUpdate);
     window.addEventListener('storage', handleProfileUpdate);
+
+    let unsubProfile: (() => void) | null = null;
+    let unsubClaimsSnap: (() => void) | null = null;
+
+    if (userId && userId !== 'guest-123' && !userId.startsWith('guest')) {
+      try {
+        unsubProfile = onSnapshot(doc(db, 'userPaymentProfiles', userId), (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            if (data.fullName) {
+              setFullName(data.fullName);
+              setModalFullName(data.fullName);
+            }
+            if (data.payoutMethod) {
+              setPayoutMethod(data.payoutMethod);
+              setModalPayoutMethod(data.payoutMethod);
+            }
+            if (data.accountNumber) {
+              setAccountNumber(data.accountNumber);
+              setModalAccountNumber(data.accountNumber);
+            }
+            if (data.fullName && data.accountNumber) {
+              setPayoutSaved(true);
+            }
+            localStorage.setItem(profileStorageKey, JSON.stringify(data));
+          }
+        }, () => {});
+
+        const qClaims = query(collection(db, 'prizeClaims'), where('userId', '==', userId));
+        unsubClaimsSnap = onSnapshot(qClaims, (snap) => {
+          const list: PrizeClaim[] = [];
+          snap.forEach((d) => {
+            list.push({ id: d.id, ...d.data() } as PrizeClaim);
+          });
+          list.sort((a, b) => new Date(b.claimedAt || 0).getTime() - new Date(a.claimedAt || 0).getTime());
+          setRecentClaims(list);
+          localStorage.setItem(claimsStorageKey, JSON.stringify(list));
+        }, () => {});
+      } catch (_) {}
+    }
 
     return () => {
       window.removeEventListener('kora_payout_profile_updated', handleProfileUpdate);
+      window.removeEventListener('kora_predictions_updated', handleProfileUpdate);
+      window.removeEventListener('kora_claims_updated', handleProfileUpdate);
+      window.removeEventListener('kora_coins_updated', handleProfileUpdate);
       window.removeEventListener('storage', handleProfileUpdate);
+      if (unsubProfile) unsubProfile();
+      if (unsubClaimsSnap) unsubClaimsSnap();
     };
   }, [userId]);
 

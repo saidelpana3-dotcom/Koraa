@@ -369,7 +369,9 @@ export async function sendMatchLiveNotification(payload: LiveNotificationPayload
 
   // 3. Dispatch window custom event for live in-app UI Toast Banner
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('kora-live-notification', { detail: payload }));
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('kora-live-notification', { detail: payload }));
+    }, 0);
   }
 
   // 4. Save to Firestore notifications collection

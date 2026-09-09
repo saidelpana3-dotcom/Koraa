@@ -13,21 +13,28 @@ export const LiveNotificationToast: React.FC<LiveNotificationToastProps> = ({ la
   const [toast, setToast] = useState<LiveNotificationPayload | null>(null);
 
   useEffect(() => {
+    let dismissTimer: ReturnType<typeof setTimeout> | null = null;
+
     const handleEvent = (e: Event) => {
       const customEvent = e as CustomEvent<LiveNotificationPayload>;
       if (customEvent.detail) {
-        setToast(customEvent.detail);
+        // Safe asynchronous update to prevent "Cannot update a component while rendering a different component"
+        setTimeout(() => {
+          setToast(customEvent.detail);
 
-        // Auto dismiss after 8 seconds (gives enough time to click predict)
-        const timer = setTimeout(() => {
-          setToast(null);
-        }, 8000);
-        return () => clearTimeout(timer);
+          if (dismissTimer) clearTimeout(dismissTimer);
+          dismissTimer = setTimeout(() => {
+            setToast(null);
+          }, 8000);
+        }, 0);
       }
     };
 
     window.addEventListener('kora-live-notification', handleEvent);
-    return () => window.removeEventListener('kora-live-notification', handleEvent);
+    return () => {
+      window.removeEventListener('kora-live-notification', handleEvent);
+      if (dismissTimer) clearTimeout(dismissTimer);
+    };
   }, [isAr]);
 
   if (!toast) return null;

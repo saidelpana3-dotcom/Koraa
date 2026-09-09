@@ -67,6 +67,35 @@ const UPDATES_LOG: UpdateItem[] = [
     ]
   },
   {
+    id: 'update-prizes-pricing-sep2026',
+    date: '3 سبتمبر 2026',
+    titleAr: 'تحديث أسعار باقات الجوائز واستبدال الكاش والكوينز',
+    titleEn: 'Updated Cash Rewards & Coins Exchange Tiers',
+    type: 'PRICE_CHANGE',
+    typeAr: 'تحديث أسعار الجوائز 🪙',
+    typeEn: 'Prize Exchange Rates 🪙',
+    summaryAr: 'اعتماد لائحة أسعار استبدال الكوينز بجوائز الكاش الفورية (إنستاباي والمحافظ الإلكترونية) بالقيم الرسمية الجديدة.',
+    summaryEn: 'Official update of coins-to-cash redemption rates for instant InstaPay & mobile wallet payouts.',
+    detailsAr: [
+      'حذف جائزة الـ 50 جنيه كاش (أقل جائزة كاش أصبحت 100 جنيه).',
+      'الـ 100 جنيه كاش: 800 كوينز 💸',
+      'الـ 150 جنيه كاش: 950 كوينز 💰',
+      'الـ 200 جنيه كاش: 1500 كوينز 🤑',
+      'الـ 350 جنيه كاش: 2000 كوينز 💎',
+      'الـ 500 جنيه كاش: 2500 كوينز 👑',
+      'الـ 1000 جنيه كاش: 5000 كوينز 🏆'
+    ],
+    detailsEn: [
+      'Removed 50 EGP cash reward (lowest tier is now 100 EGP).',
+      '100 EGP Cash = 800 Coins 💸',
+      '150 EGP Cash = 950 Coins 💰',
+      '200 EGP Cash = 1500 Coins 🤑',
+      '350 EGP Cash = 2000 Coins 💎',
+      '500 EGP Cash = 2500 Coins 👑',
+      '1,000 EGP Cash = 5000 Coins 🏆'
+    ]
+  },
+  {
     id: 'update-anti-duplicate-matches-aug2026',
     date: '15 أغسطس 2026',
     titleAr: 'منع تكرار المباريات وفلترة دقيقة للمباريات والفرق',

@@ -8,8 +8,8 @@ import {
   handleFirestoreError, 
   OperationType 
 } from './firebase';
-import { Match } from '../types';
-import { FINISHED_MATCHES_CATALOG } from '../utils/predictionEvaluator';
+import { Match, MatchStatus } from '../types';
+import { FINISHED_MATCHES_CATALOG, KNOWN_UPCOMING_MATCH_IDS, isMatchRemovedGlobally, isMatchObjectRemovedGlobally } from '../utils/predictionEvaluator';
 
 /**
  * Subscribes to real-time updates for all matches stored in Firestore.
@@ -62,16 +62,58 @@ export function mergeCloudMatches(
   localMatches: Match[],
   cloudMap: Record<string, Partial<Match>>
 ): Match[] {
+  const filteredLocal = localMatches.filter(
+    (m) => !isMatchRemovedGlobally(m.id) && !isMatchObjectRemovedGlobally(m)
+  );
+
   if (!cloudMap || Object.keys(cloudMap).length === 0) {
-    return localMatches;
+    return filteredLocal;
   }
 
-  const merged = localMatches.map((match) => {
+  const merged = filteredLocal.map((match) => {
+    // Scheduled upcoming matches must strictly remain UPCOMING with 0-0 score
+    if (KNOWN_UPCOMING_MATCH_IDS.has(match.id) || (match.status === 'UPCOMING' && !match.isFinished)) {
+      const cloudData = cloudMap[match.id];
+      // Only accept cloud data if it is explicitly UPCOMING or a valid active LIVE match with in-progress scores
+      if (cloudData && (cloudData.status === 'LIVE' || cloudData.status === 'HALF_TIME')) {
+        return {
+          ...match,
+          ...cloudData,
+          status: cloudData.status as MatchStatus,
+        };
+      }
+      return {
+        ...match,
+        homeScore: 0,
+        awayScore: 0,
+        status: 'UPCOMING' as MatchStatus,
+        isFinished: false,
+        time: match.time || '20:00',
+        minute: '',
+        pointsDistributed: false,
+      };
+    }
+
     const cloudData = cloudMap[match.id];
     const catalogEntry = FINISHED_MATCHES_CATALOG[match.id];
 
     if (!cloudData && !catalogEntry) {
       return match;
+    }
+
+    // If cloud explicitly states the match is UPCOMING or not finished
+    if (cloudData?.status === 'UPCOMING' || cloudData?.isFinished === false) {
+      return {
+        ...match,
+        ...cloudData,
+        homeScore: 0,
+        awayScore: 0,
+        status: 'UPCOMING' as MatchStatus,
+        isFinished: false,
+        time: match.time || '22:00',
+        minute: '',
+        pointsDistributed: false,
+      };
     }
 
     const homeScore = cloudData?.homeScore !== undefined 
@@ -87,9 +129,9 @@ export function mergeCloudMatches(
       match.status === 'FINISHED' || 
       Boolean(catalogEntry);
 
-    const status = isFinished 
+    const status: MatchStatus = isFinished 
       ? 'FINISHED' 
-      : (cloudData?.status || match.status);
+      : ((cloudData?.status as MatchStatus) || match.status);
 
     const time = status === 'FINISHED' 
       ? 'انتهت' 
@@ -107,7 +149,7 @@ export function mergeCloudMatches(
     };
   });
 
-  return merged;
+  return merged as Match[];
 }
 
 /**
@@ -178,6 +220,11 @@ export async function updateMatchResultInCloud(params: {
       });
     } catch (_) {
       // Background server evaluation optional if firestore write already succeeded
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('kora_trigger_prediction_eval'));
+      window.dispatchEvent(new Event('kora_matches_updated'));
     }
 
     return { success: true };

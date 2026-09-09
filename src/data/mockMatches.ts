@@ -5,9 +5,10 @@ import { PREMIER_LEAGUE_MATCHES } from './matches/epl';
 import { SERIE_A_MATCHES } from './matches/serieA';
 import { LIGUE1_MATCHES } from './matches/ligue1';
 import { OTHER_MATCHES } from './matches/other';
+import { isMatchRemovedGlobally, isMatchObjectRemovedGlobally } from '../utils/predictionEvaluator';
 
 /**
- * Returns all matches extracted precisely from the official fixtures screenshots:
+ * Returns all matches extracted precisely from the official fixtures:
  * - La Liga EA Sports (الدوري الإسباني)
  * - Egyptian Premier League (الدوري المصري الممتاز)
  * - Premier League (الدوري الإنجليزي الممتاز)
@@ -25,8 +26,13 @@ export function getAllCuratedMatches(): Match[] {
     ...LIGUE1_MATCHES,
   ];
 
+  // Filter out any removed matches requested by the user
+  const activeMatches = allMatches.filter(
+    (m) => !isMatchRemovedGlobally(m.id) && !isMatchObjectRemovedGlobally(m)
+  );
+
   // Sort chronologically by date and kickoff timestamp
-  return allMatches.sort((a, b) => {
+  return activeMatches.sort((a, b) => {
     if (a.date !== b.date) {
       return a.date.localeCompare(b.date);
     }
@@ -37,3 +43,4 @@ export function getAllCuratedMatches(): Match[] {
 export const getCurated48Matches = getAllCuratedMatches;
 export const generateInitialMatches = getAllCuratedMatches;
 export const INITIAL_MATCHES = getAllCuratedMatches();
+

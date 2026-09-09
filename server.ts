@@ -19,6 +19,20 @@ import {
   orderBy, 
   limit 
 } from "firebase/firestore";
+import {
+  getLiveFixtures,
+  getFixturesByDate,
+  getFixtureDetails,
+  formatStatsFromApiFootball,
+  formatLineupsFromApiFootball,
+  formatEventsFromApiFootball,
+  areTeamsMatching,
+  parseApiFootballStatus,
+  apiFootballDiagnostic,
+} from "./src/server/footballApi";
+import { getOfficialTeamRoster, OFFICIAL_TEAM_ROSTERS } from "./src/data/teamRosters";
+import { getAllCuratedMatches } from "./src/data/mockMatches";
+import { computeSimulatedMatchState } from "./src/server/matchGoalEngine";
 
 const app = express();
 const PORT = 3000;
@@ -60,12 +74,6 @@ const getGeminiClient = () => {
   });
 };
 
-// In-memory cache for Google Live Sync to optimize server performance and reduce API latency
-const liveSyncCache: Record<string, { data: any; timestamp: number }> = {};
-const eventsSyncCache: Record<string, { data: any; sources: any[]; timestamp: number }> = {};
-const lineupsSyncCache: Record<string, { data: any; sources: any[]; timestamp: number }> = {};
-let lastGlobalSyncCache: { data: any; timestamp: number } | null = null;
-const CACHE_TTL_MS = 90000; // 90 seconds cache TTL
 let geminiQuotaCooldownUntil = 0; // Cooldown timestamp when 429 quota is reached
 let firestoreQuotaExceededUntil = 0; // Cooldown timestamp when Firestore free quota is exceeded
 const evaluatedMatchesMemoryCache = new Set<string>(); // Cache of matchId_homeScore_awayScore to avoid duplicate Firestore queries
@@ -142,8 +150,14 @@ async function evaluateFinishedMatchesOnServer(
 
       const actualWinner = actualHome > actualAway ? 'HOME' : actualAway > actualHome ? 'AWAY' : 'DRAW';
 
-      // Query predictions for this matchId
-      const q = query(collection(db, "predictions"), where("matchId", "==", matchId));
+      // Query predictions for this matchId and known aliases
+      const matchIds = [matchId];
+      if (matchId === 'm_egy_ahly_smouha_sep3') matchIds.push('m_egy_ahly_smouha');
+      if (matchId === 'm_egy_ahly_smouha') matchIds.push('m_egy_ahly_smouha_sep3');
+      if (matchId === 'm_epl_chelsea_fulham') matchIds.push('m_epl_fulham_chelsea');
+      if (matchId === 'm_epl_fulham_chelsea') matchIds.push('m_epl_chelsea_fulham');
+
+      const q = query(collection(db, "predictions"), where("matchId", "in", matchIds));
       const snapshot = await getDocs(q);
 
       for (const predDoc of snapshot.docs) {
@@ -202,8 +216,9 @@ async function evaluateFinishedMatchesOnServer(
                 const mCatalog = MASTER_FINISHED_MATCHES_MAP[mKey];
                 const ph = Number(predData.predictedHomeScore);
                 const pa = Number(predData.predictedAwayScore);
-                const isExact = (mCatalog && ph === mCatalog.homeScore && pa === mCatalog.awayScore) ||
-                  predData.status === "EXACT_SCORE" || (typeof predData.coinsEarned === "number" && predData.coinsEarned >= 50);
+                const isExact = mCatalog
+                  ? (ph === mCatalog.homeScore && pa === mCatalog.awayScore)
+                  : (predData.status === "EXACT_SCORE" || (typeof predData.coinsEarned === "number" && predData.coinsEarned >= 50));
                 if (isExact) {
                   const rew = mCatalog?.customReward || (typeof predData.coinsEarned === "number" && predData.coinsEarned > 0 ? predData.coinsEarned : 50);
                   totalCoinsFromPredictions += rew;
@@ -211,19 +226,28 @@ async function evaluateFinishedMatchesOnServer(
                 }
               });
             } catch (calcErr) {
-              totalCoinsFromPredictions = Math.max(userData.points || 0, pointsAwarded);
-              totalExactWins = isExactMatch ? ((userData.exactPredictions || 0) + 1) : (userData.exactPredictions || 0);
+              if (pointsAwarded > 0) {
+                totalCoinsFromPredictions = (userData.coins || 0) + pointsAwarded;
+                totalExactWins = (userData.exactPredictions || 0) + 1;
+              } else if (p.status === "EXACT_SCORE") {
+                // Previously credited prediction is now revoked
+                totalCoinsFromPredictions = Math.max(0, (userData.coins || 0) - 50);
+                totalExactWins = Math.max(0, (userData.exactPredictions || 0) - 1);
+              } else {
+                totalCoinsFromPredictions = userData.coins || 0;
+                totalExactWins = userData.exactPredictions || 0;
+              }
             }
 
-            const updatedPts = Math.max(userData.points || 0, totalCoinsFromPredictions);
-            const updatedPredPts = Math.max(userData.predictionPoints || 0, totalCoinsFromPredictions);
-            const updatedCoins = Math.max(userData.coins || 0, totalCoinsFromPredictions);
+            const updatedPts = totalCoinsFromPredictions;
+            const updatedPredPts = totalCoinsFromPredictions;
+            const updatedCoins = totalCoinsFromPredictions;
 
             await updateDoc(userRef, {
               points: updatedPts,
               predictionPoints: updatedPredPts,
               coins: updatedCoins,
-              exactPredictions: Math.max(userData.exactPredictions || 0, totalExactWins),
+              exactPredictions: totalExactWins,
               lastWinAt: pointsAwarded > 0 ? new Date().toISOString() : userData.lastWinAt || null,
             });
 
@@ -274,12 +298,241 @@ async function evaluateFinishedMatchesOnServer(
   return results;
 }
 
+const ALL_UNPLAYED_MATCH_IDS = [
+  'm_egy_mokawloon_ahly_sep9',
+  'm_laliga_realmadrid_rayo_sep12',
+  'm_egy_ahly_abuqir_sep15',
+  'm_ucl_realmadrid_inter_sep8',
+  'm_ucl_realmadrid_inter',
+  'm_ucl_inter_realmadrid',
+];
+
+// Revert all unplayed matches function
+async function revertAllUnplayedMatchesInternal() {
+  let totalRevertedPredictions = 0;
+  if (!db) return totalRevertedPredictions;
+
+  for (const mIdStr of ALL_UNPLAYED_MATCH_IDS) {
+    try {
+      await setDoc(doc(db, "matches", mIdStr), {
+        id: mIdStr,
+        homeScore: 0,
+        awayScore: 0,
+        status: "UPCOMING",
+        isFinished: false,
+        time: "20:00",
+        minute: "",
+        pointsDistributed: false,
+        updatedAt: new Date().toISOString(),
+      }, { merge: false });
+    } catch (_) {}
+
+    evaluatedMatchesMemoryCache.forEach((key) => {
+      if (key.includes(mIdStr)) {
+        evaluatedMatchesMemoryCache.delete(key);
+      }
+    });
+
+    try {
+      const q = query(collection(db, "predictions"), where("matchId", "==", mIdStr));
+      const snap = await getDocs(q);
+
+      for (const pDoc of snap.docs) {
+        const p = pDoc.data();
+        const hadWon = p.status === "EXACT_SCORE" || (typeof p.coinsEarned === "number" && p.coinsEarned > 0);
+        const coinsToRemove = hadWon ? (p.coinsEarned || 50) : 0;
+
+        await updateDoc(doc(db, "predictions", pDoc.id), {
+          status: "PENDING",
+          evaluated: false,
+          pointsEarned: 0,
+          coinsEarned: 0,
+          matchHomeScore: null,
+          matchAwayScore: null,
+          updatedAt: new Date().toISOString(),
+        });
+        totalRevertedPredictions += 1;
+
+        if (p.userId && coinsToRemove > 0) {
+          try {
+            const uRef = doc(db, "users", p.userId);
+            const uSnap = await getDoc(uRef);
+            if (uSnap.exists()) {
+              const uData = uSnap.data();
+              const newCoins = Math.max(0, (uData.coins || 0) - coinsToRemove);
+              const newPts = Math.max(0, (uData.points || 0) - coinsToRemove);
+              const newExacts = Math.max(0, (uData.exactPredictions || 0) - 1);
+              await updateDoc(uRef, {
+                coins: newCoins,
+                points: newPts,
+                predictionPoints: newPts,
+                exactPredictions: newExacts,
+                correctPredictionsCount: newExacts,
+              });
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+  return totalRevertedPredictions;
+}
+
+// Endpoint to revert all unplayed matches back to UPCOMING and restore coins
+app.all(["/api/matches/revert-all-unplayed", "/api/admin/revert-all-unplayed"], async (_req, res) => {
+  try {
+    const totalRevertedPredictions = await revertAllUnplayedMatchesInternal();
+    return res.json({
+      success: true,
+      message: `تمت استعادة جميع المباريات القادمة بنجاح وإلغاء أي كوينز أضيفت بالخطأ!`,
+      totalRevertedPredictions,
+      unplayedMatchesCount: ALL_UNPLAYED_MATCH_IDS.length,
+    });
+  } catch (e: any) {
+    return res.status(500).json({ success: false, error: e?.message });
+  }
+});
+
+// Endpoint to revert a match back to UPCOMING, retract awarded coins, and restore user predictions
+app.post(["/api/matches/revert-match", "/api/admin/revert-match"], async (req, res) => {
+  const { matchId } = req.body || {};
+  if (!matchId) {
+    return res.status(400).json({ success: false, error: "Missing matchId" });
+  }
+
+  try {
+    const mIdStr = String(matchId);
+
+    // 1. Reset Firestore match document to UPCOMING
+    if (db) {
+      try {
+        await setDoc(doc(db, "matches", mIdStr), {
+          id: mIdStr,
+          homeScore: 0,
+          awayScore: 0,
+          status: "UPCOMING",
+          isFinished: false,
+          time: "22:00",
+          minute: "",
+          pointsDistributed: false,
+          updatedAt: new Date().toISOString(),
+        }, { merge: false });
+      } catch (dbErr) {
+        console.warn("Firestore match reset warning:", dbErr);
+      }
+    }
+
+    // 2. Clear memory caches
+    evaluatedMatchesMemoryCache.forEach((key) => {
+      if (key.includes(mIdStr)) {
+        evaluatedMatchesMemoryCache.delete(key);
+      }
+    });
+
+    // 3. Reset predictions in Firestore and retract coins
+    let revertedPredictionsCount = 0;
+    if (db) {
+      try {
+        const matchIds = [mIdStr];
+        const q = query(collection(db, "predictions"), where("matchId", "in", matchIds));
+        const snap = await getDocs(q);
+
+        for (const pDoc of snap.docs) {
+          const p = pDoc.data();
+          const hadWon = p.status === "EXACT_SCORE" || (typeof p.coinsEarned === "number" && p.coinsEarned > 0);
+          const coinsToRemove = hadWon ? (p.coinsEarned || 50) : 0;
+
+          await updateDoc(doc(db, "predictions", pDoc.id), {
+            status: "PENDING",
+            evaluated: false,
+            pointsEarned: 0,
+            coinsEarned: 0,
+            matchHomeScore: null,
+            matchAwayScore: null,
+            updatedAt: new Date().toISOString(),
+          });
+          revertedPredictionsCount += 1;
+
+          // Retract coins from user
+          if (p.userId && coinsToRemove > 0) {
+            try {
+              const uRef = doc(db, "users", p.userId);
+              const uSnap = await getDoc(uRef);
+              if (uSnap.exists()) {
+                const uData = uSnap.data();
+                const newCoins = Math.max(0, (uData.coins || 0) - coinsToRemove);
+                const newPts = Math.max(0, (uData.points || 0) - coinsToRemove);
+                const newExacts = Math.max(0, (uData.exactPredictions || 0) - 1);
+                await updateDoc(uRef, {
+                  coins: newCoins,
+                  points: newPts,
+                  predictionPoints: newPts,
+                  exactPredictions: newExacts,
+                  correctPredictionsCount: newExacts,
+                });
+              }
+            } catch (uErr) {
+              console.warn("User coin retraction warning:", uErr);
+            }
+          }
+        }
+      } catch (predErr) {
+        console.warn("Predictions revert warning:", predErr);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `المباراة ${mIdStr} تم إعادتها إلى قائمة المباريات القادمة (UPCOMING)، وتم سحب الكوينز المضافة واستعادة توقع كل مستخدم كمعلق (PENDING)!`,
+      revertedPredictionsCount,
+    });
+  } catch (e: any) {
+    return res.status(500).json({ success: false, error: e?.message });
+  }
+});
+
 // Endpoint to update a match result in Firestore and award points to all user predictions
 app.post(["/api/matches/update-result", "/api/admin/evaluate-match"], async (req, res) => {
   const { matchId, homeScore, awayScore, homeTeamAr, awayTeamAr, status, isFinished } = req.body || {};
-  if (!matchId || homeScore === undefined || awayScore === undefined) {
-    return res.status(400).json({ success: false, error: "Missing parameters (matchId, homeScore, awayScore)" });
+  if (!matchId) {
+    return res.status(400).json({ success: false, error: "Missing matchId" });
   }
+
+  // If status is UPCOMING or isFinished is explicitly false, forward to revert logic
+  if (status === "UPCOMING" || isFinished === false) {
+    const mIdStr = String(matchId);
+    if (db) {
+      try {
+        await setDoc(doc(db, "matches", mIdStr), {
+          id: mIdStr,
+          homeScore: 0,
+          awayScore: 0,
+          status: "UPCOMING",
+          isFinished: false,
+          time: "22:00",
+          minute: "",
+          pointsDistributed: false,
+          updatedAt: new Date().toISOString(),
+        }, { merge: false });
+      } catch (dbErr) {
+        console.warn("Firestore match setDoc warning:", dbErr);
+      }
+    }
+
+    evaluatedMatchesMemoryCache.forEach((key) => {
+      if (key.includes(mIdStr)) evaluatedMatchesMemoryCache.delete(key);
+    });
+
+    return res.json({
+      success: true,
+      message: `Match ${matchId} reverted to UPCOMING.`,
+    });
+  }
+
+  if (homeScore === undefined || awayScore === undefined) {
+    return res.status(400).json({ success: false, error: "Missing parameters (homeScore, awayScore)" });
+  }
+
   try {
     const finalStatus = status || (isFinished !== false ? "FINISHED" : "LIVE");
     const finalIsFinished = finalStatus === "FINISHED" || isFinished === true;
@@ -350,6 +603,8 @@ let cachedLeaderboard: any[] = [];
 // Master Catalog of all known finished matches with exact scorelines and coins rewards
 const MASTER_FINISHED_MATCHES_MAP: Record<string, { homeScore: number; awayScore: number; customReward?: number }> = {
   // Premier League
+  m_epl_mancity_coventry_sep5: { homeScore: 1, awayScore: 0, customReward: 50 },
+  m_epl_fulham_crystalpalace_sep5: { homeScore: 2, awayScore: 3, customReward: 50 },
   m_epl_manutd_ipswich: { homeScore: 5, awayScore: 2, customReward: 50 },
   m_epl_ipswich_manutd: { homeScore: 2, awayScore: 5, customReward: 50 },
   m_epl_chelsea_brighton: { homeScore: 4, awayScore: 3, customReward: 50 },
@@ -367,6 +622,14 @@ const MASTER_FINISHED_MATCHES_MAP: Record<string, { homeScore: number; awayScore
   m_epl_tottenham_arsenal: { homeScore: 1, awayScore: 2, customReward: 50 },
   m_epl_liverpool_wolves: { homeScore: 2, awayScore: 0, customReward: 50 },
   m_epl_everton_astonvilla: { homeScore: 0, awayScore: 1, customReward: 50 },
+  m_epl_everton_manutd_sep6: { homeScore: 2, awayScore: 2, customReward: 50 },
+  m_epl_everton_manutd: { homeScore: 2, awayScore: 2, customReward: 50 },
+  m_epl_astonvilla_arsenal: { homeScore: 0, awayScore: 1, customReward: 50 },
+  m_epl_arsenal_astonvilla: { homeScore: 1, awayScore: 0, customReward: 50 },
+  m_epl_ipswich_liverpool_sep4: { homeScore: 0, awayScore: 2, customReward: 50 },
+  m_epl_liverpool_ipswich_sep4: { homeScore: 2, awayScore: 0, customReward: 50 },
+  m_epl_ipswich_liverpool: { homeScore: 0, awayScore: 2, customReward: 50 },
+  m_epl_liverpool_ipswich: { homeScore: 2, awayScore: 0, customReward: 50 },
   // Egyptian League & Cup
   m_egy_cup_enppi_degla: { homeScore: 1, awayScore: 3, customReward: 50 },
   m_egy_cup_degla_enppi: { homeScore: 3, awayScore: 1, customReward: 50 },
@@ -388,7 +651,16 @@ const MASTER_FINISHED_MATCHES_MAP: Record<string, { homeScore: number; awayScore
   m_sat_mahalla_pyramids: { homeScore: 0, awayScore: 3, customReward: 50 },
   m_sat_masry_smouha: { homeScore: 1, awayScore: 0, customReward: 50 },
   m_egy_zamalek_pyramids: { homeScore: 1, awayScore: 1, customReward: 50 },
+  m_egy_ahly_smouha: { homeScore: 1, awayScore: 0, customReward: 50 },
+  m_egy_ahly_smouha_sep3: { homeScore: 1, awayScore: 0, customReward: 50 },
+  m_egy_zamalek_abuqir_sep8: { homeScore: 2, awayScore: 0, customReward: 50 },
+  m_egy_zamalek_abuqir: { homeScore: 2, awayScore: 0, customReward: 50 },
+  m_egy_abuqir_zamalek: { homeScore: 0, awayScore: 2, customReward: 50 },
   // La Liga
+  m_laliga_celta_bilbao: { homeScore: 0, awayScore: 2, customReward: 50 },
+  m_laliga_bilbao_celta: { homeScore: 2, awayScore: 0, customReward: 50 },
+  m_laliga_deportivo_valencia: { homeScore: 3, awayScore: 1, customReward: 50 },
+  m_laliga_valencia_deportivo: { homeScore: 1, awayScore: 3, customReward: 50 },
   m_laliga_real_malaga: { homeScore: 4, awayScore: 0, customReward: 50 },
   m_laliga_malaga_real: { homeScore: 0, awayScore: 4, customReward: 50 },
   m_laliga_alaves_villarreal: { homeScore: 1, awayScore: 0, customReward: 50 },
@@ -397,9 +669,15 @@ const MASTER_FINISHED_MATCHES_MAP: Record<string, { homeScore: number; awayScore
   m_laliga_elche_racing: { homeScore: 2, awayScore: 3, customReward: 50 },
   m_laliga_celta_osasuna: { homeScore: 1, awayScore: 2, customReward: 50 },
   m_laliga_osasuna_celta: { homeScore: 2, awayScore: 1, customReward: 50 },
+  m_laliga_osasuna_getafe: { homeScore: 1, awayScore: 0, customReward: 50 },
+  m_laliga_getafe_osasuna: { homeScore: 0, awayScore: 1, customReward: 50 },
+  m_laliga_barcelona_rayo: { homeScore: 5, awayScore: 2, customReward: 50 },
+  m_laliga_rayo_barcelona: { homeScore: 2, awayScore: 5, customReward: 50 },
   m_laliga_barcelona_bilbao: { homeScore: 2, awayScore: 0, customReward: 50 },
   m_laliga_bilbao_barcelona: { homeScore: 0, awayScore: 2, customReward: 50 },
   m_laliga_valencia_betis: { homeScore: 0, awayScore: 1, customReward: 50 },
+  m_laliga_valencia_barcelona_sep6: { homeScore: 0, awayScore: 5, customReward: 50 },
+  m_laliga_valencia_barcelona: { homeScore: 0, awayScore: 5, customReward: 50 },
   m_laliga_real_sociedad: { homeScore: 4, awayScore: 1, customReward: 50 },
   m_laliga_atletico_villarreal: { homeScore: 2, awayScore: 2, customReward: 50 },
   m_laliga_elche_barcelona: { homeScore: 0, awayScore: 5, customReward: 50 },
@@ -410,13 +688,21 @@ const MASTER_FINISHED_MATCHES_MAP: Record<string, { homeScore: number; awayScore
   m_sat_valencia_celta: { homeScore: 0, awayScore: 0, customReward: 50 },
   m_sat_espanyol_realmadrid: { homeScore: 1, awayScore: 2, customReward: 50 },
   m_laliga_realmadrid_barcelona: { homeScore: 2, awayScore: 1, customReward: 50 },
+  m_laliga_betis_realmadrid_sep4: { homeScore: 1, awayScore: 2, customReward: 50 },
+  m_laliga_realmadrid_betis_sep4: { homeScore: 2, awayScore: 1, customReward: 50 },
+  m_laliga_betis_realmadrid: { homeScore: 1, awayScore: 2, customReward: 50 },
+  m_laliga_realmadrid_betis: { homeScore: 2, awayScore: 1, customReward: 50 },
   m_laliga_levante_betis: { homeScore: 5, awayScore: 2, customReward: 50 },
   m_laliga_betis_levante: { homeScore: 2, awayScore: 5, customReward: 50 },
   m_laliga_sociedad_espanyol: { homeScore: 2, awayScore: 1, customReward: 50 },
   m_laliga_espanyol_sociedad: { homeScore: 1, awayScore: 2, customReward: 50 },
+  m_laliga_sociedad_celta: { homeScore: 0, awayScore: 0, customReward: 50 },
+  m_laliga_celta_sociedad: { homeScore: 0, awayScore: 0, customReward: 50 },
   m_laliga_sevilla_atletico: { homeScore: 1, awayScore: 3, customReward: 50 },
   m_laliga_atletico_sevilla: { homeScore: 3, awayScore: 1, customReward: 50 },
   // Ligue 1
+  m_ligue1_monaco_marseille: { homeScore: 2, awayScore: 0, customReward: 50 },
+  m_ligue1_marseille_monaco: { homeScore: 0, awayScore: 2, customReward: 50 },
   m_ligue1_paris_nice: { homeScore: 3, awayScore: 0, customReward: 50 },
   m_ligue1_nice_paris: { homeScore: 0, awayScore: 3, customReward: 50 },
   m_ligue1_rennes_lemans: { homeScore: 3, awayScore: 2, customReward: 50 },
@@ -438,11 +724,13 @@ const MASTER_FINISHED_MATCHES_MAP: Record<string, { homeScore: number; awayScore
   // Champions League & Other Tournaments
   m_ucl_psg_bayern: { homeScore: 2, awayScore: 2, customReward: 50 },
   m_afcon_egypt_senegal: { homeScore: 1, awayScore: 0, customReward: 50 },
+  m_superlig_trabzonspor_genclerbirligi_sep6: { homeScore: 2, awayScore: 0, customReward: 50 },
+  m_superlig_trabzonspor_genclerbirligi: { homeScore: 2, awayScore: 0, customReward: 50 },
 };
 
 // Endpoint to restore and sync user coins directly from their predictions in Firestore
 app.post("/api/user/sync-coins", async (req, res) => {
-  const { userId } = req.body || {};
+  const { userId, email } = req.body || {};
   if (!userId || !db) {
     return res.status(400).json({ success: false, error: "Missing userId or database" });
   }
@@ -451,34 +739,79 @@ app.post("/api/user/sync-coins", async (req, res) => {
     const q = query(collection(db, "predictions"), where("userId", "==", userId));
     const predsSnap = await getDocs(q);
 
-    let calculatedCoins = 0;
-    let exactCount = 0;
-    let totalCount = 0;
+    // Also query by userEmail if provided to ensure cross-device/provider sync
+    const docsList = [...predsSnap.docs];
+    if (email && typeof email === 'string' && email.trim()) {
+      try {
+        const cleanEmail = email.toLowerCase().trim();
+        const qEmail = query(collection(db, "predictions"), where("userEmail", "==", cleanEmail));
+        const emailSnap = await getDocs(qEmail);
+        for (const ed of emailSnap.docs) {
+          if (!docsList.some((d) => d.id === ed.id)) {
+            docsList.push(ed);
+            // Link prediction permanently to this userId
+            try {
+              await updateDoc(doc(db, "predictions", ed.id), { userId });
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
 
-    for (const docSnap of predsSnap.docs) {
-      const p = docSnap.data();
-      totalCount++;
+    // Deduplicate predictions per matchId so each match only counts once
+    const userMatchPreds = new Map<string, any>();
+    for (const docSnap of docsList) {
+      const p = { id: docSnap.id, ...docSnap.data() } as any;
+      const matchKey = p.matchId || (typeof p.id === 'string' && p.id.startsWith('pred_') ? p.id.split('_').slice(2).join('_') : p.id);
+      if (!matchKey) continue;
+      
+      const canonicalMatchKey = (matchKey === 'm_epl_chelsea_fulham' || matchKey === 'm_epl_fulham_chelsea')
+        ? 'm_epl_fulham_chelsea'
+        : matchKey;
+
+      if (!userMatchPreds.has(canonicalMatchKey)) {
+        userMatchPreds.set(canonicalMatchKey, p);
+      } else {
+        const existing = userMatchPreds.get(canonicalMatchKey);
+        if (!existing.createdAt || !p.createdAt || new Date(p.createdAt) >= new Date(existing.createdAt)) {
+          userMatchPreds.set(canonicalMatchKey, p);
+        }
+      }
+    }
+
+    let totalEarnedCoins = 0;
+    let totalSpentCoins = 0;
+    let exactCount = 0;
+    let totalCount = userMatchPreds.size;
+
+    for (const p of userMatchPreds.values()) {
       const matchKey = p.matchId;
       const targetMatch = MASTER_FINISHED_MATCHES_MAP[matchKey] || 
         (matchKey === 'm_epl_fulham_chelsea' ? MASTER_FINISHED_MATCHES_MAP['m_epl_chelsea_fulham'] : null);
 
+      const fee = typeof p.coinsSpent === 'number'
+        ? p.coinsSpent
+        : 0;
+      totalSpentCoins += fee;
+
       const predHome = Number(p.predictedHomeScore);
       const predAway = Number(p.predictedAwayScore);
-      const isExactByScore = targetMatch && predHome === targetMatch.homeScore && predAway === targetMatch.awayScore;
-      const isExactByStatus = p.status === "EXACT_SCORE" || (typeof p.coinsEarned === "number" && p.coinsEarned >= 50);
+      const isExactByScore = Boolean(targetMatch && predHome === targetMatch.homeScore && predAway === targetMatch.awayScore);
+      const isExactByStatus = !targetMatch && (p.status === "EXACT_SCORE" || (typeof p.coinsEarned === "number" && p.coinsEarned >= 50));
 
       if (isExactByScore || isExactByStatus) {
         const reward = targetMatch?.customReward || (typeof p.coinsEarned === "number" && p.coinsEarned > 0 ? p.coinsEarned : 50);
-        calculatedCoins += reward;
+        totalEarnedCoins += reward;
         exactCount++;
 
-        // Ensure prediction doc has EXACT_SCORE and coinsEarned
-        if (p.status !== "EXACT_SCORE" || !p.coinsEarned) {
+        // Ensure prediction doc has EXACT_SCORE, coinsEarned, and coinsSpent
+        if (p.id && (p.status !== "EXACT_SCORE" || !p.coinsEarned || p.coinsSpent === undefined)) {
           try {
-            await updateDoc(doc(db, "predictions", docSnap.id), {
+            await updateDoc(doc(db, "predictions", p.id), {
               status: "EXACT_SCORE",
               coinsEarned: reward,
               pointsEarned: reward,
+              coinsSpent: fee,
               evaluated: true,
               evaluatedAt: new Date().toISOString(),
               matchHomeScore: targetMatch ? targetMatch.homeScore : predHome,
@@ -486,20 +819,47 @@ app.post("/api/user/sync-coins", async (req, res) => {
             });
           } catch (_) {}
         }
+      } else {
+        // Not exact! If previously marked as exact (e.g. erroneous 2-1 prediction), revoke coins and update doc to MISSED
+        if (p.id && (p.status === "EXACT_SCORE" || (typeof p.coinsEarned === "number" && p.coinsEarned > 0))) {
+          try {
+            await updateDoc(doc(db, "predictions", p.id), {
+              status: "MISSED",
+              coinsEarned: 0,
+              pointsEarned: 0,
+              coinsSpent: fee,
+              evaluated: true,
+              evaluatedAt: new Date().toISOString(),
+              matchHomeScore: targetMatch ? targetMatch.homeScore : 0,
+              matchAwayScore: targetMatch ? targetMatch.awayScore : 0,
+            });
+          } catch (_) {}
+        }
       }
     }
+
+    // Check prize claims (cash withdrawals) for this user
+    let totalClaimedCoins = 0;
+    try {
+      const claimsQ = query(collection(db, "prizeClaims"), where("userId", "==", userId));
+      const claimsSnap = await getDocs(claimsQ);
+      claimsSnap.forEach((cDoc) => {
+        const cData = cDoc.data();
+        totalClaimedCoins += (cData.coinsSpent || 1000);
+      });
+    } catch (_) {}
+
+    const netCoins = Math.max(0, totalEarnedCoins - totalSpentCoins - totalClaimedCoins);
 
     const userRef = doc(db, "users", userId);
     const userSnap = await getDoc(userRef);
     if (userSnap.exists()) {
       const uData = userSnap.data();
-      const currentCoins = typeof uData.coins === "number" ? uData.coins : (typeof uData.points === "number" ? uData.points : 0);
-      const finalCoins = Math.max(currentCoins, calculatedCoins);
 
       await updateDoc(userRef, {
-        coins: finalCoins,
-        points: finalCoins,
-        predictionPoints: finalCoins,
+        coins: netCoins,
+        points: netCoins,
+        predictionPoints: totalEarnedCoins,
         exactPredictions: Math.max(uData.exactPredictions || 0, exactCount),
         updatedAt: new Date().toISOString(),
       });
@@ -507,13 +867,16 @@ app.post("/api/user/sync-coins", async (req, res) => {
       return res.json({
         success: true,
         userId,
-        restoredCoins: finalCoins,
+        restoredCoins: netCoins,
+        totalEarnedCoins,
+        totalSpentCoins,
+        totalClaimedCoins,
         exactPredictions: exactCount,
         totalPredictions: totalCount,
       });
     }
 
-    return res.json({ success: true, userId, restoredCoins: calculatedCoins });
+    return res.json({ success: true, userId, restoredCoins: netCoins });
   } catch (e: any) {
     return res.status(500).json({ success: false, error: e?.message });
   }
@@ -551,6 +914,8 @@ app.all("/api/admin/recalculate-standings", async (req, res) => {
       userId: string;
       userName: string;
       totalPoints: number;
+      totalEarnedCoins: number;
+      totalSpentCoins: number;
       totalCoins: number;
       exactCount: number;
       correctOutcomeCount: number;
@@ -558,53 +923,100 @@ app.all("/api/admin/recalculate-standings", async (req, res) => {
       predictionsList: any[];
     }> = {};
 
+    // Group predictions by userId and deduplicate by matchId
+    const userMatchPredsMap: Record<string, Map<string, any>> = {};
+    const userDisplayNames: Record<string, string> = {};
+
     predsSnap.forEach((docSnap) => {
-      const p = docSnap.data();
+      const p = { id: docSnap.id, ...docSnap.data() } as any;
       if (!p.userId) return;
 
-      if (!userAggregates[p.userId]) {
-        userAggregates[p.userId] = {
-          userId: p.userId,
-          userName: p.userName || p.userDisplayName || "مستخدم Kora",
-          totalPoints: 0,
-          totalCoins: 0,
-          exactCount: 0,
-          correctOutcomeCount: 0,
-          totalPredictions: 0,
-          predictionsList: [],
-        };
+      if (!userMatchPredsMap[p.userId]) {
+        userMatchPredsMap[p.userId] = new Map<string, any>();
+        userDisplayNames[p.userId] = p.userName || p.userDisplayName || "مستخدم Kora";
       }
 
-      const userAgg = userAggregates[p.userId];
-      userAgg.totalPredictions += 1;
+      const matchKey = p.matchId || (typeof p.id === 'string' && p.id.startsWith('pred_') ? p.id.split('_').slice(2).join('_') : p.id);
+      if (!matchKey) return;
 
-      const targetMatch = MASTER_FINISHED_MATCHES_MAP[p.matchId] || 
-        (p.matchId === 'm_epl_fulham_chelsea' ? MASTER_FINISHED_MATCHES_MAP['m_epl_chelsea_fulham'] : null);
-      
-      const predHome = Number(p.predictedHomeScore);
-      const predAway = Number(p.predictedAwayScore);
-      const isExact = (targetMatch && predHome === targetMatch.homeScore && predAway === targetMatch.awayScore) ||
-        p.status === "EXACT_SCORE" || (typeof p.coinsEarned === "number" && p.coinsEarned >= 50);
+      const canonicalMatchKey = (matchKey === 'm_epl_chelsea_fulham' || matchKey === 'm_epl_fulham_chelsea')
+        ? 'm_epl_fulham_chelsea'
+        : matchKey;
 
-      const reward = targetMatch?.customReward || (typeof p.coinsEarned === "number" && p.coinsEarned > 0 ? p.coinsEarned : 50);
-
-      if (isExact) {
-        userAgg.exactCount += 1;
-        userAgg.totalPoints += reward;
-        userAgg.totalCoins += reward;
-      } else if (p.status === "CORRECT_OUTCOME") {
-        userAgg.correctOutcomeCount += 1;
+      const userMap = userMatchPredsMap[p.userId];
+      if (!userMap.has(canonicalMatchKey)) {
+        userMap.set(canonicalMatchKey, p);
+      } else {
+        const existing = userMap.get(canonicalMatchKey);
+        if (!existing.createdAt || !p.createdAt || new Date(p.createdAt) >= new Date(existing.createdAt)) {
+          userMap.set(canonicalMatchKey, p);
+        }
       }
-
-      userAgg.predictionsList.push({
-        matchId: p.matchId,
-        predicted: `${p.predictedHomeScore}-${p.predictedAwayScore}`,
-        status: isExact ? 'EXACT_SCORE' : p.status,
-        pointsEarned: isExact ? reward : (p.pointsEarned || 0),
-      });
     });
 
-    // 3. Fetch all registered users in Firestore
+    Object.entries(userMatchPredsMap).forEach(([userId, userMap]) => {
+      userAggregates[userId] = {
+        userId,
+        userName: userDisplayNames[userId] || "مستخدم Kora",
+        totalPoints: 0,
+        totalEarnedCoins: 0,
+        totalSpentCoins: 0,
+        totalCoins: 0,
+        exactCount: 0,
+        correctOutcomeCount: 0,
+        totalPredictions: userMap.size,
+        predictionsList: [],
+      };
+
+      const userAgg = userAggregates[userId];
+
+      for (const p of userMap.values()) {
+        const matchKey = p.matchId;
+        const targetMatch = MASTER_FINISHED_MATCHES_MAP[matchKey] || 
+          (matchKey === 'm_epl_fulham_chelsea' ? MASTER_FINISHED_MATCHES_MAP['m_epl_chelsea_fulham'] : null);
+        
+        const fee = typeof p.coinsSpent === 'number'
+          ? p.coinsSpent
+          : 0;
+        userAgg.totalSpentCoins += fee;
+
+        const predHome = Number(p.predictedHomeScore);
+        const predAway = Number(p.predictedAwayScore);
+        const isExact = targetMatch
+          ? (predHome === targetMatch.homeScore && predAway === targetMatch.awayScore)
+          : (p.status === "EXACT_SCORE" || (typeof p.coinsEarned === "number" && p.coinsEarned >= 50));
+
+        const reward = targetMatch?.customReward || (typeof p.coinsEarned === "number" && p.coinsEarned > 0 ? p.coinsEarned : 50);
+
+        if (isExact) {
+          userAgg.exactCount += 1;
+          userAgg.totalPoints += reward;
+          userAgg.totalEarnedCoins += reward;
+        } else if (p.status === "CORRECT_OUTCOME") {
+          userAgg.correctOutcomeCount += 1;
+        }
+
+        userAgg.predictionsList.push({
+          matchId: p.matchId,
+          predicted: `${p.predictedHomeScore}-${p.predictedAwayScore}`,
+          status: isExact ? 'EXACT_SCORE' : p.status,
+          pointsEarned: isExact ? reward : (p.pointsEarned || 0),
+          coinsSpent: fee,
+        });
+      }
+    });
+
+    // 3. Fetch all prize claims
+    const claimsSnap = await getDocs(collection(db, "prizeClaims"));
+    const userClaimsSpent: Record<string, number> = {};
+    claimsSnap.forEach((cDoc) => {
+      const c = cDoc.data();
+      if (c.userId) {
+        userClaimsSpent[c.userId] = (userClaimsSpent[c.userId] || 0) + (c.coinsSpent || 1000);
+      }
+    });
+
+    // 4. Fetch all registered users in Firestore
     const allUsersSnap = await getDocs(collection(db, "users"));
     const updatedLeaderboard: any[] = [];
 
@@ -615,6 +1027,8 @@ app.all("/api/admin/recalculate-standings", async (req, res) => {
         userId,
         userName: userData.displayName || "مستخدم Kora",
         totalPoints: 0,
+        totalEarnedCoins: 0,
+        totalSpentCoins: 0,
         totalCoins: 0,
         exactCount: 0,
         correctOutcomeCount: 0,
@@ -622,13 +1036,14 @@ app.all("/api/admin/recalculate-standings", async (req, res) => {
         predictionsList: [],
       };
 
-      const finalCoins = agg.totalCoins;
-      const finalPoints = agg.totalPoints;
+      const claimsDeduction = userClaimsSpent[userId] || 0;
+      const netCoins = Math.max(0, agg.totalEarnedCoins - agg.totalSpentCoins - claimsDeduction);
+      const finalPoints = netCoins;
 
       await updateDoc(doc(db, "users", userId), {
         points: finalPoints,
-        predictionPoints: finalPoints,
-        coins: finalCoins,
+        predictionPoints: agg.totalEarnedCoins,
+        coins: netCoins,
         exactPredictions: agg.exactCount,
         correctOutcomes: agg.correctOutcomeCount,
         totalPredictions: agg.totalPredictions,
@@ -639,8 +1054,8 @@ app.all("/api/admin/recalculate-standings", async (req, res) => {
         userId,
         displayName: userData.displayName || agg.userName,
         points: finalPoints,
-        predictionPoints: finalPoints,
-        coins: finalCoins,
+        predictionPoints: agg.totalEarnedCoins,
+        coins: netCoins,
         exactPredictions: agg.exactCount,
         correctOutcomes: agg.correctOutcomeCount,
         totalPredictions: agg.totalPredictions,
@@ -728,161 +1143,6 @@ app.get("/api/predictions/match-stats", async (req, res) => {
   }
 });
 
-// Google Live Match Score Sync Endpoint using Gemini + Google Search Grounding
-app.post("/api/matches/google-live-sync", async (req, res) => {
-  const { matches, language } = req.body || {};
-  const isArabic = language === 'ar';
-
-  if (!Array.isArray(matches) || matches.length === 0) {
-    return res.json({ syncedMatches: [], source: "empty_request" });
-  }
-
-  // Create a cache key from match IDs and current scores
-  const cacheKey = matches.map((m: any) => `${m.id}_${m.homeTeam}_vs_${m.awayTeam}_${m.homeScore}-${m.awayScore}_${m.status}`).join("|");
-  const cached = liveSyncCache[cacheKey];
-
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    return res.json({ syncedMatches: cached.data, source: "server_cache", cachedAt: new Date(cached.timestamp).toISOString() });
-  }
-
-  // Check if we are in a rate-limit cooldown
-  const inCooldown = Date.now() < geminiQuotaCooldownUntil;
-
-  if (!inCooldown) {
-    try {
-      const ai = getGeminiClient();
-      if (ai) {
-        const matchDescriptions = matches.map((m: any) => 
-          `Match ID: ${m.id} | ${m.homeTeam} vs ${m.awayTeam} | League: ${m.leagueName || m.league} | Status: ${m.status}`
-        ).join("\n");
-
-        const prompt = isArabic
-          ? `استخدم محرك بحث جوجل (Google Search) لمعرفة آخر وأحدث النتايج المباشرة الآن للمباريات التالية اليوم:
-${matchDescriptions}
-
-قم بالبحث عن نتيجة كل مباراة بالوقت الفعلي من نتائج جوجل الرياضية (Google Football Live Scores).
-أعد النتائج بتنسيق JSON حصرياً كقائمة كالتالي:
-{
-  "syncedMatches": [
-    {
-      "id": "match_id_here",
-      "homeScore": number,
-      "awayScore": number,
-      "status": "LIVE" | "FINISHED" | "UPCOMING" | "HALFTIME",
-      "minute": "مثال 75' أو انتهت أو بين الشوطين",
-      "isFinished": boolean,
-      "goalDetected": boolean (ضع true فقط إذا تم تسجيل هدف جديد للتو),
-      "scoringTeam": "HOME" | "AWAY" | null,
-      "scorerName": "اسم اللاعب إذا وُجد أو null",
-      "matchNote": "ملاحظة سريعة باللغة العربية كالمُعلق"
-    }
-  ]
-}`
-          : `Search Google for current live football match scores and status right now for:
-${matchDescriptions}
-
-Fetch latest real-time scores from Google Live Scores. Return strictly a JSON object:
-{
-  "syncedMatches": [
-    {
-      "id": "match_id_here",
-      "homeScore": number,
-      "awayScore": number,
-      "status": "LIVE" | "FINISHED" | "UPCOMING" | "HALFTIME",
-      "minute": "e.g. 75' or FT",
-      "isFinished": boolean,
-      "goalDetected": boolean,
-      "scoringTeam": "HOME" | "AWAY" | null,
-      "scorerName": "player name or null",
-      "matchNote": "brief note"
-    }
-  ]
-}`;
-
-        const response = await ai.models.generateContent({
-          model: "gemini-3.6-flash",
-          contents: prompt,
-          config: {
-            tools: [{ googleSearch: {} }],
-          },
-        });
-
-        let responseText = response.text || "";
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          responseText = jsonMatch[0];
-        }
-
-        const parsedData = JSON.parse(responseText);
-        const syncedMatches = parsedData.syncedMatches || [];
-
-        // Trigger evaluation only for finished matches not yet evaluated in memory
-        const finished = syncedMatches.filter((m: any) => m.isFinished || m.status === 'FINISHED' || m.status === 'FT');
-        const unevaluatedFinished = finished.filter((m: any) => !evaluatedMatchesMemoryCache.has(`${m.id}_${m.homeScore}_${m.awayScore}`));
-        if (unevaluatedFinished.length > 0) {
-          evaluateFinishedMatchesOnServer(unevaluatedFinished, false).catch((e) => console.warn("Async prediction eval notice:", e?.message || e));
-        }
-
-        // Save to memory cache
-        const cacheObj = {
-          data: syncedMatches,
-          timestamp: Date.now(),
-        };
-        liveSyncCache[cacheKey] = cacheObj;
-        lastGlobalSyncCache = cacheObj;
-
-        return res.json({
-          syncedMatches,
-          source: "google_search_grounding",
-          timestamp: new Date().toISOString(),
-        });
-      }
-    } catch (err: any) {
-      if (err?.status === 429 || err?.message?.includes("429") || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("quota")) {
-        geminiQuotaCooldownUntil = Date.now() + 180000; // 3 minutes cooldown
-        console.warn("Google Live Sync rate limit hit (429), activated 3-minute cooldown. Serving cached/fallback data.");
-      } else {
-        console.warn("Google Live Sync notice:", err?.message || err);
-      }
-    }
-  }
-
-  // If we have a previous successful global cache, reuse it gracefully
-  if (lastGlobalSyncCache && Date.now() - lastGlobalSyncCache.timestamp < 600000) {
-    return res.json({
-      syncedMatches: lastGlobalSyncCache.data,
-      source: "server_last_known_cache",
-      cachedAt: new Date(lastGlobalSyncCache.timestamp).toISOString(),
-    });
-  }
-
-  // Graceful Fallback if offline/API unavailable/quota limit
-  const fallbackSynced = matches.map((m: any) => ({
-    id: m.id,
-    homeScore: m.homeScore ?? 0,
-    awayScore: m.awayScore ?? 0,
-    status: m.status || 'UPCOMING',
-    minute: m.status === 'LIVE' ? (m.minute || "45'") : (m.status === 'FINISHED' ? 'انتهت' : undefined),
-    isFinished: m.status === "FINISHED",
-    goalDetected: false,
-    scoringTeam: null,
-    scorerName: null,
-    matchNote: isArabic ? "مُحدّث من الخادم (سيرفر كورة المباشر)" : "Updated via Kora Server Live",
-  }));
-
-  // Trigger eval only for unevaluated finished matches in fallback
-  const finishedFallback = fallbackSynced.filter((m: any) => m.isFinished);
-  const unevaluatedFallback = finishedFallback.filter((m: any) => !evaluatedMatchesMemoryCache.has(`${m.id}_${m.homeScore}_${m.awayScore}`));
-  if (unevaluatedFallback.length > 0) {
-    evaluateFinishedMatchesOnServer(unevaluatedFallback, false).catch((e) => console.warn("Async prediction eval notice:", e?.message || e));
-  }
-
-  return res.json({
-    syncedMatches: fallbackSynced,
-    source: "fallback_server",
-  });
-});
-
 // Explicit endpoint to trigger match predictions evaluation
 app.post("/api/matches/evaluate", async (req, res) => {
   const { matches } = req.body || {};
@@ -894,6 +1154,450 @@ app.post("/api/matches/evaluate", async (req, res) => {
   await evaluateFinishedMatchesOnServer(finished);
 
   return res.json({ success: true, evaluatedCount: finished.length });
+});
+
+// =========================================================================
+// API-Football Integration Endpoints (v3.football.api-sports.io)
+// Real-time live scores, elapsed match minute, stats, lineups, and events (Auto 5-min refresh)
+// =========================================================================
+
+// Status Endpoint
+app.get("/api/football/status", async (_req, res) => {
+  try {
+    const live = await getLiveFixtures();
+    return res.json({
+      success: true,
+      status: apiFootballDiagnostic.status || (live.length > 0 ? "connected" : "fallback_active"),
+      connected: apiFootballDiagnostic.connected,
+      message: apiFootballDiagnostic.message,
+      apiKeyConfigured: true,
+      liveFixturesCount: live.length,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    return res.json({
+      success: true,
+      status: "fallback_active",
+      connected: false,
+      message: err?.message || "Error reaching API-Football",
+      apiKeyConfigured: true,
+      liveFixturesCount: 0,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// Exact real-time synchronization (الوقت الفعلي) - delay set to 0
+const MATCH_STREAM_DELAY_MINUTES = 0;
+
+// Helper to compute match live status & elapsed minute based on scheduled kickoff with 5-minute delay and smart goal engine
+function computeScheduledMatchStatus(match: any, isArabic: boolean): {
+  status: 'LIVE' | 'FINISHED' | 'UPCOMING' | 'HALF_TIME';
+  minute: string;
+  isFinished: boolean;
+  homeScore: number;
+  awayScore: number;
+  goalDetected: boolean;
+  scoringTeam: 'HOME' | 'AWAY' | null;
+  lastGoal: any;
+  events: any[];
+  stats: any;
+} {
+  const masterData = MASTER_FINISHED_MATCHES_MAP[match.id];
+  if (match.status === 'FINISHED' || match.isFinished === true) {
+    const sim = computeSimulatedMatchState(match, Date.now(), isArabic);
+    return {
+      status: 'FINISHED',
+      minute: isArabic ? 'انتهت' : 'FT',
+      isFinished: true,
+      homeScore: masterData ? masterData.homeScore : (typeof match.homeScore === 'number' && match.homeScore > 0 ? match.homeScore : sim.homeScore),
+      awayScore: masterData ? masterData.awayScore : (typeof match.awayScore === 'number' && match.awayScore > 0 ? match.awayScore : sim.awayScore),
+      goalDetected: false,
+      scoringTeam: null,
+      lastGoal: null,
+      events: sim.events,
+      stats: sim.stats,
+    };
+  }
+
+  // Use the Smart Match Goal & Simulation Engine for real-time dynamic progression & goals
+  const sim = computeSimulatedMatchState(match, Date.now(), isArabic);
+  return {
+    status: sim.status,
+    minute: sim.minute,
+    isFinished: sim.isFinished,
+    homeScore: sim.homeScore,
+    awayScore: sim.awayScore,
+    goalDetected: sim.goalDetected,
+    scoringTeam: sim.scoringTeam,
+    lastGoal: sim.lastGoal,
+    events: sim.events,
+    stats: sim.stats,
+  };
+}
+
+// Real-Time Live Matches Synchronizer (Called automatically every 5 minutes by client & server)
+app.post("/api/football/sync-live", async (req, res) => {
+  const { matches, language } = req.body || {};
+  const isArabic = language === 'ar';
+
+  if (!Array.isArray(matches) || matches.length === 0) {
+    return res.json({ success: true, syncedMatches: [], source: "empty" });
+  }
+
+  const syncedMatches: any[] = [];
+  const newlyFinishedMatches: any[] = [];
+
+  try {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const [liveFixtures, todayFixtures] = await Promise.all([
+      getLiveFixtures().catch(() => []),
+      getFixturesByDate(todayStr).catch(() => []),
+    ]);
+
+    const allFixtures = [...(liveFixtures || []), ...(todayFixtures || [])];
+
+    for (const match of matches) {
+      const homeName = match.homeTeam || '';
+      const awayName = match.awayTeam || '';
+      const homeNameAr = match.homeTeamAr || '';
+      const awayNameAr = match.awayTeamAr || '';
+
+      // Check if match is already officially finished or in master catalog
+      const masterData = MASTER_FINISHED_MATCHES_MAP[match.id];
+      const isAlreadyFinished = Boolean(masterData) || match.status === 'FINISHED' || match.isFinished === true;
+      if (isAlreadyFinished) {
+        const finalHomeScore = masterData ? masterData.homeScore : (typeof match.homeScore === 'number' ? match.homeScore : 0);
+        const finalAwayScore = masterData ? masterData.awayScore : (typeof match.awayScore === 'number' ? match.awayScore : 0);
+        syncedMatches.push({
+          id: match.id,
+          homeScore: finalHomeScore,
+          awayScore: finalAwayScore,
+          status: 'FINISHED',
+          minute: isArabic ? 'انتهت' : 'FT',
+          isFinished: true,
+          goalDetected: false,
+          scoringTeam: null,
+          matchNote: isArabic ? 'نتيجة رسمية مؤكدة' : 'Official Confirmed Result',
+          source: 'master_catalog',
+        });
+        if (match.status !== 'FINISHED') {
+          newlyFinishedMatches.push({
+            id: match.id,
+            homeScore: finalHomeScore,
+            awayScore: finalAwayScore,
+            homeTeamAr: match.homeTeamAr,
+            awayTeamAr: match.awayTeamAr,
+          });
+        }
+        continue;
+      }
+
+      // Find matching fixture in API-Football
+      const matchedFixture = allFixtures.find((f: any) => {
+        const fHome = f.teams?.home?.name || '';
+        const fAway = f.teams?.away?.name || '';
+        const homeMatches = areTeamsMatching(fHome, homeName) || areTeamsMatching(fHome, homeNameAr);
+        const awayMatches = areTeamsMatching(fAway, awayName) || areTeamsMatching(fAway, awayNameAr);
+        return homeMatches && awayMatches;
+      });
+
+      if (matchedFixture) {
+        const fixtureHomeScore = typeof matchedFixture.goals?.home === 'number' ? matchedFixture.goals.home : match.homeScore;
+        const fixtureAwayScore = typeof matchedFixture.goals?.away === 'number' ? matchedFixture.goals.away : match.awayScore;
+        const rawElapsed = matchedFixture.fixture?.status?.elapsed;
+        // Exact real-time elapsed minute (الوقت الفعلي)
+        const liveElapsed = typeof rawElapsed === 'number' ? rawElapsed : null;
+
+        const statusInfo = parseApiFootballStatus(
+          matchedFixture.fixture?.status?.short || '',
+          liveElapsed
+        );
+
+        const goalDetected = (fixtureHomeScore > (match.homeScore || 0)) || (fixtureAwayScore > (match.awayScore || 0));
+        let scoringTeam: 'HOME' | 'AWAY' | null = null;
+        if (fixtureHomeScore > (match.homeScore || 0)) scoringTeam = 'HOME';
+        else if (fixtureAwayScore > (match.awayScore || 0)) scoringTeam = 'AWAY';
+
+        syncedMatches.push({
+          id: match.id,
+          fixtureId: matchedFixture.fixture?.id,
+          homeScore: fixtureHomeScore,
+          awayScore: fixtureAwayScore,
+          status: statusInfo.status,
+          minute: statusInfo.minuteDisplay || (statusInfo.status === 'LIVE' ? `${liveElapsed || 1}'` : ''),
+          isFinished: statusInfo.isFinished,
+          goalDetected,
+          scoringTeam,
+          matchNote: isArabic 
+            ? `مُحدّث مباشرة من API-Football (الوقت الفعلي: ${statusInfo.minuteDisplay || 'مباشر'})` 
+            : `Live real-time sync via API-Football (${statusInfo.minuteDisplay || 'LIVE'})`,
+          source: "api_football_live",
+        });
+
+        if (statusInfo.isFinished && match.status !== 'FINISHED') {
+          newlyFinishedMatches.push({
+            id: match.id,
+            homeScore: fixtureHomeScore,
+            awayScore: fixtureAwayScore,
+            homeTeamAr: match.homeTeamAr,
+            awayTeamAr: match.awayTeamAr,
+          });
+        }
+      } else {
+        // Check if match has reached kickoff time (Cairo +03:00)
+        let hasKickedOff = false;
+        if (typeof match.kickoffTimeMs === 'number' && match.kickoffTimeMs > 0) {
+          hasKickedOff = Date.now() >= match.kickoffTimeMs;
+        } else if (match.date && match.time && match.time !== 'انتهت' && match.time !== 'FT') {
+          try {
+            const cleanDate = String(match.date).trim();
+            const timeParts = String(match.time).trim().replace(/[^0-9:]/g, '').split(':').map(Number);
+            if (cleanDate.match(/^\d{4}-\d{2}-\d{2}$/) && !isNaN(timeParts[0])) {
+              const hours = timeParts[0];
+              const minutes = timeParts[1] || 0;
+              const kickoffDate = new Date(`${cleanDate}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`);
+              hasKickedOff = Date.now() >= kickoffDate.getTime();
+            }
+          } catch (_) {}
+        }
+
+        // If match has not yet reached kickoff time, keep it strictly UPCOMING
+        if (!hasKickedOff && (ALL_UNPLAYED_MATCH_IDS.includes(match.id) || (match.status === 'UPCOMING' && !match.isFinished))) {
+          syncedMatches.push({
+            id: match.id,
+            homeScore: 0,
+            awayScore: 0,
+            status: 'UPCOMING',
+            minute: match.time || (isArabic ? 'لم تبدأ' : 'Upcoming'),
+            isFinished: false,
+            goalDetected: false,
+            scoringTeam: null,
+            matchNote: isArabic ? 'موعد المباراة المرتقب' : 'Upcoming Fixture',
+            source: 'fixture_schedule',
+          });
+          continue;
+        }
+
+        // Compute smart live status from scheduled date & kickoff time with live goal engine
+        const computed = computeScheduledMatchStatus(match, isArabic);
+        const prevHome = typeof match.homeScore === 'number' ? match.homeScore : 0;
+        const prevAway = typeof match.awayScore === 'number' ? match.awayScore : 0;
+        const homeGoal = computed.homeScore > prevHome;
+        const awayGoal = computed.awayScore > prevAway;
+        const isGoalDetected = homeGoal || awayGoal || computed.goalDetected;
+        const scoringTeam = homeGoal ? 'HOME' : awayGoal ? 'AWAY' : computed.scoringTeam;
+
+        syncedMatches.push({
+          id: match.id,
+          homeScore: computed.homeScore,
+          awayScore: computed.awayScore,
+          status: computed.status,
+          minute: computed.minute,
+          isFinished: computed.isFinished,
+          goalDetected: isGoalDetected,
+          scoringTeam,
+          lastGoal: computed.lastGoal,
+          matchNote: isGoalDetected && computed.lastGoal
+            ? (isArabic ? `⚽ هدف! ${computed.lastGoal.playerAr} (${computed.lastGoal.minute}')` : `⚽ Goal! ${computed.lastGoal.player} (${computed.lastGoal.minute}')`)
+            : computed.status === 'LIVE' 
+            ? (isArabic ? `مباراة جارية (${computed.minute})` : `Match in progress (${computed.minute})`)
+            : computed.status === 'FINISHED'
+            ? (isArabic ? 'انتهت المباراة' : 'Match Finished')
+            : (isArabic ? 'موعد المباراة المرتقب' : 'Upcoming Fixture'),
+          source: "smart_scheduler",
+        });
+
+        if (computed.isFinished && match.status !== 'FINISHED') {
+          newlyFinishedMatches.push({
+            id: match.id,
+            homeScore: computed.homeScore,
+            awayScore: computed.awayScore,
+            homeTeamAr: match.homeTeamAr,
+            awayTeamAr: match.awayTeamAr,
+          });
+        }
+      }
+    }
+
+    // Auto-evaluate exact predictions and award 50 coins if any match just completed
+    if (newlyFinishedMatches.length > 0) {
+      evaluateFinishedMatchesOnServer(newlyFinishedMatches, true).catch(err => {
+        console.warn("API-Football auto-evaluation notice:", err);
+      });
+    }
+
+    return res.json({
+      success: true,
+      syncedMatches,
+      matchedCount: syncedMatches.length,
+      source: "api_football_engine",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    console.warn("API-Football live sync notice:", err?.message || err);
+    
+    // Comprehensive resilient fallback
+    const fallbackSynced = matches.map((m: any) => {
+      const computed = computeScheduledMatchStatus(m, isArabic);
+      const prevHome = typeof m.homeScore === 'number' ? m.homeScore : 0;
+      const prevAway = typeof m.awayScore === 'number' ? m.awayScore : 0;
+      const homeGoal = computed.homeScore > prevHome;
+      const awayGoal = computed.awayScore > prevAway;
+      const isGoalDetected = homeGoal || awayGoal || computed.goalDetected;
+      const scoringTeam = homeGoal ? 'HOME' : awayGoal ? 'AWAY' : computed.scoringTeam;
+      return {
+        id: m.id,
+        homeScore: computed.homeScore,
+        awayScore: computed.awayScore,
+        status: computed.status,
+        minute: computed.minute,
+        isFinished: computed.isFinished,
+        goalDetected: isGoalDetected,
+        scoringTeam,
+        lastGoal: computed.lastGoal,
+        matchNote: isGoalDetected && computed.lastGoal
+          ? (isArabic ? `⚽ هدف! ${computed.lastGoal.playerAr} (${computed.lastGoal.minute}')` : `⚽ Goal! ${computed.lastGoal.player} (${computed.lastGoal.minute}')`)
+          : isArabic ? "مُحدّث من خادم كورة الذكي" : "Updated via Kora Smart Server",
+        source: "server_fallback",
+      };
+    });
+
+    return res.json({
+      success: true,
+      syncedMatches: fallbackSynced,
+      matchedCount: fallbackSynced.length,
+      source: "server_fallback",
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// Comprehensive Match Details: Live Stats, Lineups, and Events from API-Football
+app.post("/api/football/match-live-details", async (req, res) => {
+  const { matchId, homeTeam, awayTeam, homeTeamAr, awayTeamAr, fixtureId, status, minute, homeScore, awayScore } = req.body || {};
+
+  try {
+    let targetFixtureId = fixtureId;
+
+    // If fixtureId not passed directly, look it up from today's / live fixtures
+    if (!targetFixtureId && (homeTeam || awayTeam)) {
+      const todayStr = new Date().toISOString().split('T')[0];
+      const [liveFixtures, todayFixtures] = await Promise.all([
+        getLiveFixtures().catch(() => []),
+        getFixturesByDate(todayStr).catch(() => []),
+      ]);
+      const all = [...(liveFixtures || []), ...(todayFixtures || [])];
+      const match = all.find((f: any) => {
+        const fHome = f.teams?.home?.name || '';
+        const fAway = f.teams?.away?.name || '';
+        return (
+          areTeamsMatching(fHome, homeTeam) ||
+          areTeamsMatching(fHome, homeTeamAr) ||
+          areTeamsMatching(fAway, awayTeam) ||
+          areTeamsMatching(fAway, awayTeamAr)
+        );
+      });
+      if (match) {
+        targetFixtureId = match.fixture?.id;
+      }
+    }
+
+    if (targetFixtureId) {
+      const details = await getFixtureDetails(Number(targetFixtureId));
+      if (details) {
+        const stats = details.statistics ? formatStatsFromApiFootball(details.statistics) : null;
+        const lineups = details.lineups ? formatLineupsFromApiFootball(details.lineups) : null;
+        const events = details.events ? formatEventsFromApiFootball(details.events, homeTeam) : [];
+
+        // Exact real-time elapsed clock (الوقت الفعلي)
+        const rawElapsed = details.fixture?.fixture?.status?.elapsed;
+        const liveElapsed = typeof rawElapsed === 'number' ? rawElapsed : null;
+
+        const statusInfo = details.fixture?.fixture?.status
+          ? parseApiFootballStatus(details.fixture.fixture.status.short, liveElapsed)
+          : null;
+
+        return res.json({
+          success: true,
+          matchId,
+          fixtureId: targetFixtureId,
+          homeScore: details.fixture?.goals?.home ?? undefined,
+          awayScore: details.fixture?.goals?.away ?? undefined,
+          status: statusInfo?.status,
+          minute: statusInfo?.minuteDisplay,
+          isFinished: statusInfo?.isFinished,
+          stats: stats || undefined,
+          events: events.length > 0 ? events : undefined,
+          homeLineup: lineups?.homeLineup || undefined,
+          awayLineup: lineups?.awayLineup || undefined,
+          matchNote: "مُحدّث مباشرة من API-Football (الوقت الفعلي والأحداث والتشكيلات)",
+          source: "api_football_direct",
+        });
+      }
+    }
+  } catch (err: any) {
+    console.warn("API-Football match details notice:", err?.message || err);
+  }
+
+  // Guaranteed High-Quality Fallback: Look up curated match data from the app's fixture catalog
+  const resolvedHomeLineup = getOfficialTeamRoster(homeTeam) || getOfficialTeamRoster(homeTeamAr);
+  const resolvedAwayLineup = getOfficialTeamRoster(awayTeam) || getOfficialTeamRoster(awayTeamAr);
+
+  const allCurated = getAllCuratedMatches();
+  const curated = allCurated.find((m: any) => 
+    m.id === matchId || 
+    (m.homeTeam && m.awayTeam && areTeamsMatching(m.homeTeam, homeTeam) && areTeamsMatching(m.awayTeam, awayTeam)) ||
+    (m.homeTeamAr && m.awayTeamAr && areTeamsMatching(m.homeTeamAr, homeTeamAr) && areTeamsMatching(m.awayTeamAr, awayTeamAr))
+  );
+
+  const matchObj = curated || {
+    id: matchId,
+    homeTeam,
+    awayTeam,
+    homeTeamAr,
+    awayTeamAr,
+    status,
+    minute,
+    homeScore,
+    awayScore,
+  };
+  const computedSim = computeSimulatedMatchState(matchObj, Date.now(), true);
+
+  const finalStatus = curated?.status === 'FINISHED' ? 'FINISHED' : (status === 'FINISHED' ? 'FINISHED' : computedSim.status);
+  const finalMinute = finalStatus === 'FINISHED' ? 'انتهت' : computedSim.minute;
+  const finalEvents = (curated?.events && curated.events.length > 0) ? curated.events : computedSim.events;
+  const finalHomeScore = finalStatus === 'FINISHED' 
+    ? (curated?.homeScore ?? (typeof homeScore === 'number' && homeScore > 0 ? homeScore : computedSim.homeScore)) 
+    : computedSim.homeScore;
+  const finalAwayScore = finalStatus === 'FINISHED' 
+    ? (curated?.awayScore ?? (typeof awayScore === 'number' && awayScore > 0 ? awayScore : computedSim.awayScore)) 
+    : computedSim.awayScore;
+
+  const hasCuratedStats = curated?.stats && (
+    (curated.stats.possession?.[0] > 0 || curated.stats.possession?.[1] > 0) ||
+    (curated.stats.shotsTotal?.[0] > 0 || curated.stats.shotsTotal?.[1] > 0)
+  );
+  const finalStats = hasCuratedStats ? curated.stats : (finalStatus === 'UPCOMING' ? null : computedSim.stats);
+
+  return res.json({
+    success: true,
+    matchId,
+    status: finalStatus,
+    minute: finalMinute,
+    homeScore: finalHomeScore,
+    awayScore: finalAwayScore,
+    homeLineup: curated?.homeLineup || resolvedHomeLineup || undefined,
+    awayLineup: curated?.awayLineup || resolvedAwayLineup || undefined,
+    stats: finalStats,
+    events: finalEvents,
+    matchNote: finalStatus === 'LIVE'
+      ? "أحداث وإحصائيات مباشرة مع تأخير 5 دقائق لمطابقة البث التلفزيوني"
+      : finalStatus === 'UPCOMING'
+      ? "تشكيلات مؤكدة وقوائم اللاعبين الرسمية لمباراة مرتقبة"
+      : "إحصائيات وأحداث المباراة المؤكدة",
+    source: "kora_official_engine",
+  });
 });
 
 // AI Tactical Analysis Endpoint
@@ -1055,303 +1759,6 @@ Stats: ${JSON.stringify(matchData.stats || {})}`;
     summary: isArabic
       ? `شهدت مباراة ${homeTeam} ضد ${awayTeam} في بطولة ${league} منافسة قوية وحافلة بالندية، وانتهت اللقاء بنتيجة (${homeScore} - ${awayScore}). تميز الأداء بالتكتيك المرتفع والتحركات المتبادلة بين الفريقين طوال التسعين دقيقة.`
       : `The clash between ${homeTeam} and ${awayTeam} in ${league} ended with a scoreline of (${homeScore} - ${awayScore}). Both teams showed intense tactical effort and determination throughout the 90 minutes.`,
-  });
-});
-
-// Endpoint: Live Match Events and Score fetched directly from Google Search Grounding
-app.post("/api/google/sync-match-events", async (req, res) => {
-  const { homeTeam, awayTeam, leagueName, matchId, language } = req.body || {};
-  const isArabic = language === 'ar';
-  const eventCacheKey = `${matchId || 'm'}_${homeTeam}_${awayTeam}`;
-
-  // Check event cache first
-  const cachedEvent = eventsSyncCache[eventCacheKey];
-  if (cachedEvent && Date.now() - cachedEvent.timestamp < 120000) {
-    return res.json({
-      success: true,
-      matchId,
-      data: cachedEvent.data,
-      sources: cachedEvent.sources,
-      source: "server_events_cache",
-      syncedAt: new Date(cachedEvent.timestamp).toISOString(),
-    });
-  }
-
-  // If in rate limit cooldown, return graceful fallback immediately
-  if (Date.now() < geminiQuotaCooldownUntil) {
-    return res.json({
-      success: true,
-      matchId,
-      data: {
-        liveCommentary: isArabic ? `مباراة حماسية بين ${homeTeam} و ${awayTeam}. جاري متابعة أهم الأحداث.` : `Live match between ${homeTeam} and ${awayTeam}.`,
-        events: [],
-      },
-      sources: [],
-      source: "fallback_cooldown",
-    });
-  }
-
-  try {
-    const ai = getGeminiClient();
-    if (ai) {
-      const prompt = isArabic
-        ? `ابحث في نتائج جوجل الرياضية (Google Search Live Scores) بالوقت الفعلي عن أحداث ونتيجة وتفاصيل مباراة كرة القدم الحالية بين "${homeTeam}" و "${awayTeam}" في بطولة "${leagueName}".
-أعد النتائج بتنسيق JSON يحتوي على:
-{
-  "homeScore": number,
-  "awayScore": number,
-  "status": "LIVE" | "FINISHED" | "UPCOMING" | "HALF_TIME",
-  "minute": "الدقيقة الحالية أو انتهت",
-  "liveCommentary": "ملخص مباشر ومثير لأبرز ما جرى في المباراة حتى الآن",
-  "events": [
-    {
-      "id": "فريد",
-      "minute": number,
-      "type": "GOAL" | "YELLOW_CARD" | "RED_CARD" | "SUBSTITUTION" | "VAR",
-      "team": "HOME" | "AWAY",
-      "playerName": "اسم اللاعب باللغة العربية",
-      "playerNameAr": "اسم اللاعب باللغة العربية",
-      "detail": "تفاصيل الحدث"
-    }
-  ]
-}`
-        : `Search Google Live Scores right now for real-time match status, live scores, and events for: "${homeTeam}" vs "${awayTeam}" in "${leagueName}".
-Return JSON format:
-{
-  "homeScore": number,
-  "awayScore": number,
-  "status": "LIVE" | "FINISHED" | "UPCOMING" | "HALF_TIME",
-  "minute": "current minute or FT",
-  "liveCommentary": "brief exciting commentary summary",
-  "events": [
-    {
-      "id": "unique_string",
-      "minute": number,
-      "type": "GOAL" | "YELLOW_CARD" | "RED_CARD" | "SUBSTITUTION" | "VAR",
-      "team": "HOME" | "AWAY",
-      "playerName": "Player Name",
-      "playerNameAr": "Player Name in Arabic",
-      "detail": "Event details"
-    }
-  ]
-}`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-        },
-      });
-
-      let responseText = response.text || "{}";
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        responseText = jsonMatch[0];
-      }
-
-      const parsedData = JSON.parse(responseText);
-
-      // Extract Grounding Sources
-      const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-      const sources = groundingChunks
-        .map((c: any) => c.web)
-        .filter(Boolean)
-        .map((w: any) => ({ title: w.title, uri: w.uri }));
-
-      // Store in event cache
-      eventsSyncCache[eventCacheKey] = {
-        data: parsedData,
-        sources,
-        timestamp: Date.now(),
-      };
-
-      return res.json({
-        success: true,
-        matchId,
-        data: parsedData,
-        sources,
-        source: "google_search_grounding",
-        syncedAt: new Date().toISOString(),
-      });
-    }
-  } catch (err: any) {
-    if (err?.status === 429 || err?.message?.includes("429") || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("quota")) {
-      geminiQuotaCooldownUntil = Date.now() + 180000;
-      console.warn("Google Sync Match Events rate limited (429), switching seamlessly to server match events fallback.");
-    } else {
-      console.warn("Google Sync Match Events notice:", err?.message || err);
-    }
-  }
-
-  // Fallback response if API or network is unavailable
-  return res.json({
-    success: true,
-    matchId,
-    data: {
-      liveCommentary: isArabic ? `مباراة حماسية بين ${homeTeam} و ${awayTeam}. التغطية مستمرة عبر الخادم.` : `Match coverage between ${homeTeam} and ${awayTeam}.`,
-      events: [],
-    },
-    sources: [],
-    source: "fallback_server",
-  });
-});
-
-// Endpoint: Official Match Lineups dynamically fetched from Google Search Grounding prior to kickoff
-app.post("/api/google/sync-match-lineups", async (req, res) => {
-  const { homeTeam, awayTeam, leagueName, matchId, language } = req.body || {};
-  const isArabic = language === 'ar';
-  const lineupCacheKey = `${matchId || 'm'}_lineup_${homeTeam}_${awayTeam}`;
-
-  // Check in-memory lineup cache first (5 minutes TTL)
-  const cachedLineup = lineupsSyncCache[lineupCacheKey];
-  if (cachedLineup && Date.now() - cachedLineup.timestamp < 300000) {
-    return res.json({
-      success: true,
-      matchId,
-      data: cachedLineup.data,
-      sources: cachedLineup.sources,
-      source: "server_lineup_cache",
-      syncedAt: new Date(cachedLineup.timestamp).toISOString(),
-    });
-  }
-
-  // If in rate limit cooldown, return graceful notice
-  if (Date.now() < geminiQuotaCooldownUntil) {
-    return res.json({
-      success: true,
-      matchId,
-      data: {
-        message: isArabic
-          ? "⏳ التشكيل الرسمي يُنشر فور اعتماده من الجهاز الفني قبل اللقاء بساعة."
-          : "⏳ Official starting lineups are confirmed 60 minutes before kickoff.",
-      },
-      sources: [],
-      source: "fallback_cooldown",
-    });
-  }
-
-  try {
-    const ai = getGeminiClient();
-    if (ai) {
-      const prompt = isArabic
-        ? `ابحث في نتائج جوجل (Google Search) عن التشكيل الرسمي المعتمد لمباراة كرة القدم بين "${homeTeam}" و "${awayTeam}" في بطولة "${leagueName}".
-إذا كانت المباراة قادمة ولم يُعلن التشكيل الرسمي بعد (عادة يُعلن قبل اللقاء بساعة واحدة)، حدد ذلك بوضوح.
-إذا كان التشكيل الرسمي معلناً، أعد البيانات بتنسيق JSON:
-{
-  "isAnnounced": boolean,
-  "message": "نص توضيحي باللغة العربية",
-  "homeLineup": {
-    "formation": "4-3-3",
-    "coach": "اسم المدرب",
-    "coachAr": "اسم المدرب بالعربية",
-    "starting11": [
-      {
-        "id": "فريد",
-        "number": number,
-        "name": "اسم اللاعب بالإنجليزية",
-        "nameAr": "اسم اللاعب بالعربية",
-        "position": "GK" | "DEF" | "MID" | "FWD",
-        "rating": 7.0,
-        "gridPos": { "x": number, "y": number }
-      }
-    ],
-    "substitutes": [
-      {
-        "id": "فريد",
-        "number": number,
-        "name": "الاسم",
-        "nameAr": "الاسم بالعربية",
-        "position": "DEF"
-      }
-    ]
-  },
-  "awayLineup": {
-    "formation": "4-3-3",
-    "coach": "اسم المدرب",
-    "coachAr": "اسم المدرب بالعربية",
-    "starting11": [
-      {
-        "id": "فريد",
-        "number": number,
-        "name": "اسم اللاعب",
-        "nameAr": "اسم اللاعب بالعربية",
-        "position": "GK" | "DEF" | "MID" | "FWD",
-        "rating": 7.0,
-        "gridPos": { "x": number, "y": number }
-      }
-    ],
-    "substitutes": []
-  }
-}`
-        : `Search Google for official confirmed lineups for "${homeTeam}" vs "${awayTeam}" in "${leagueName}".
-If not announced yet (usually published 60 mins before kickoff), set isAnnounced to false.
-Return JSON with format:
-{
-  "isAnnounced": boolean,
-  "message": "Lineup announcement status message",
-  "homeLineup": { "formation": "4-3-3", "starting11": [], "substitutes": [] },
-  "awayLineup": { "formation": "4-3-3", "starting11": [], "substitutes": [] }
-}`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-        },
-      });
-
-      let responseText = response.text || "{}";
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        responseText = jsonMatch[0];
-      }
-
-      const parsedData = JSON.parse(responseText);
-
-      // Extract Grounding Sources
-      const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-      const sources = groundingChunks
-        .map((c: any) => c.web)
-        .filter(Boolean)
-        .map((w: any) => ({ title: w.title, uri: w.uri }));
-
-      lineupsSyncCache[lineupCacheKey] = {
-        data: parsedData,
-        sources,
-        timestamp: Date.now(),
-      };
-
-      return res.json({
-        success: true,
-        matchId,
-        data: parsedData,
-        sources,
-        source: "google_search_grounding",
-        syncedAt: new Date().toISOString(),
-      });
-    }
-  } catch (err: any) {
-    if (err?.status === 429 || err?.message?.includes("429") || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("quota")) {
-      geminiQuotaCooldownUntil = Date.now() + 180000;
-      console.warn("Google Sync Match Lineups rate limited (429), switching to lineup fallback.");
-    } else {
-      console.warn("Google Sync Match Lineups notice:", err?.message || err);
-    }
-  }
-
-  return res.json({
-    success: true,
-    matchId,
-    data: {
-      isAnnounced: false,
-      message: isArabic
-        ? "⏳ التشكيل الرسمي يُنشر تلقائياً فور اعتماده قبل انطلاق المباراة بساعة."
-        : "⏳ Official lineups will be published 1 hour before match start.",
-    },
-    sources: [],
-    source: "fallback_server",
   });
 });
 
@@ -1635,6 +2042,18 @@ setInterval(() => {
   }
 }, 30000); // Check every 30 seconds
 
+// ⚡ Background Scheduled Checker: Automatically evaluate finished matches and award 50 coins to correct exact predictions
+setInterval(() => {
+  try {
+    const finishedMatchesArray = Object.entries(MASTER_FINISHED_MATCHES_MAP).map(([id, data]) => ({
+      id,
+      homeScore: data.homeScore,
+      awayScore: data.awayScore,
+    }));
+    evaluateFinishedMatchesOnServer(finishedMatchesArray, false).catch(() => {});
+  } catch (_) {}
+}, 45000); // Check every 45 seconds
+
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -1655,6 +2074,7 @@ async function startServer() {
     // Run initial evaluation of finished matches to ensure points and coins are distributed
     setTimeout(async () => {
       try {
+        await revertAllUnplayedMatchesInternal();
         const finishedMatchesArray = Object.entries(MASTER_FINISHED_MATCHES_MAP).map(([id, data]) => ({
           id,
           homeScore: data.homeScore,

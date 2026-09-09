@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Match, Language, ThemeMode } from '../types';
-import { Sparkles, Activity, Clock, Shield, Heart, Bell } from 'lucide-react';
+import { Sparkles, Activity, Clock, Shield, Heart, Bell, CheckCircle } from 'lucide-react';
 import { TeamLogo } from './TeamLogo';
+import { isMatchLive, isMatchFinished, getMatchPlayedMinute } from '../data/matchHelpers';
 
 interface MatchCardProps {
   match: Match;
@@ -15,11 +16,21 @@ interface MatchCardProps {
   userPrediction?: { predictedHomeScore: number; predictedAwayScore: number };
 }
 
-// Countdown formatter helper function
-function formatCountdown(kickoffMs?: number): string {
-  if (!kickoffMs) return '21:08:58:45';
+interface CountdownParts {
+  days: string;
+  hours: string;
+  minutes: string;
+  seconds: string;
+}
+
+function getCountdownParts(kickoffMs?: number): CountdownParts {
+  if (!kickoffMs) {
+    return { days: '05', hours: '12', minutes: '19', seconds: '46' };
+  }
   const diff = kickoffMs - Date.now();
-  if (diff <= 0) return '00:00:00:00';
+  if (diff <= 0) {
+    return { days: '00', hours: '00', minutes: '00', seconds: '00' };
+  }
 
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
@@ -27,7 +38,12 @@ function formatCountdown(kickoffMs?: number): string {
   const seconds = Math.floor((diff % (1000 * 60)) / 1000);
 
   const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${pad(days)}:${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+  return {
+    days: pad(days),
+    hours: pad(hours),
+    minutes: pad(minutes),
+    seconds: pad(seconds),
+  };
 }
 
 export const MatchCard: React.FC<MatchCardProps> = ({
@@ -43,222 +59,247 @@ export const MatchCard: React.FC<MatchCardProps> = ({
 }) => {
   const isAr = language === 'ar';
   const isDark = theme === 'dark';
-  const isLive = match.status === 'LIVE' || match.status === 'HALF_TIME';
-  const isStarted = isLive || match.status === 'FINISHED' || match.isPredictionClosed || (!!match.kickoffTimeMs && Date.now() >= match.kickoffTimeMs);
-  const isUpcoming = match.status === 'UPCOMING' && !isStarted;
+  const isFinished = isMatchFinished(match);
+  const isLive = !isFinished && isMatchLive(match);
+  const isUpcoming = !isFinished && !isLive;
+  const isStarted = isLive || isFinished || match.isPredictionClosed || (!!match.kickoffTimeMs && Date.now() >= match.kickoffTimeMs);
   const isPredictionAllowed = isUpcoming && !match.isPredictionClosed;
+  const playedMinute = getMatchPlayedMinute(match, isAr);
 
-  const [countdownStr, setCountdownStr] = useState<string>(() => formatCountdown(match.kickoffTimeMs));
+  const [countdownParts, setCountdownParts] = useState<CountdownParts>(() => getCountdownParts(match.kickoffTimeMs));
+  const [, setTick] = useState<number>(0);
 
   useEffect(() => {
-    if (!isUpcoming) return;
+    // High-frequency 1s interval for countdown & automatic transition to LIVE at kickoff
     const interval = setInterval(() => {
-      setCountdownStr(formatCountdown(match.kickoffTimeMs));
+      if (match.kickoffTimeMs) {
+        if (Date.now() >= match.kickoffTimeMs) {
+          // Force re-render to instantly switch to LIVE state
+          setTick((t) => t + 1);
+        } else {
+          setCountdownParts(getCountdownParts(match.kickoffTimeMs));
+        }
+      }
     }, 1000);
     return () => clearInterval(interval);
-  }, [isUpcoming, match.kickoffTimeMs]);
+  }, [match.kickoffTimeMs]);
+
+  // Determine atmospheric side glow gradients based on team colors or stadium lights
+  const homeGlowColor = match.homeColor || '#dc2626';
+  const awayGlowColor = match.awayColor || '#2563eb';
 
   return (
-    <div className={`group relative rounded-2xl border transition-all duration-300 hover:shadow-lg hover:-translate-y-0.5 overflow-hidden ${
-      isDark
-        ? isLive
-          ? 'bg-slate-900/95 border-emerald-500/70 shadow-lg shadow-emerald-950/50 bg-gradient-to-b from-slate-900 via-slate-900 to-emerald-950/30 text-white'
-          : 'bg-slate-900/95 border-slate-800 hover:border-slate-700 text-white'
-        : isLive
-          ? 'bg-white border-emerald-500 shadow-md shadow-emerald-100 bg-gradient-to-b from-white via-white to-emerald-50/40 text-slate-900'
-          : 'bg-white border-slate-200 hover:border-slate-300 text-slate-900 shadow-sm'
-    }`}>
-      {/* Points Distributed Banner */}
-      {(match.status === 'FINISHED' || match.pointsDistributed) && (
-        <div className={`w-full border-b px-3 py-1.5 flex items-center justify-center gap-1.5 font-black text-xs sm:text-sm tracking-wide ${
-          isDark
-            ? 'bg-gradient-to-r from-emerald-950 via-emerald-900/90 to-emerald-950 border-emerald-500/50 text-emerald-300'
-            : 'bg-emerald-50 border-emerald-200 text-emerald-800'
-        }`}>
-          <Sparkles className="w-4 h-4 text-emerald-500 animate-pulse" />
-          <span>{isAr ? '✨ تم توزيع النقاط لهذا الماتش' : '✨ Points Distributed for this Match'}</span>
-        </div>
-      )}
+    <div
+      className={`group relative rounded-2xl border transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 overflow-hidden ${
+        isDark
+          ? 'bg-slate-900/95 border-slate-800 hover:border-slate-700 text-white shadow-sm'
+          : 'bg-white border-slate-200/90 hover:border-slate-300 text-slate-900 shadow-xs'
+      }`}
+    >
+      {/* Team Atmospheric Stadium Glow Lighting */}
+      <div
+        className="absolute top-0 bottom-0 left-0 w-[35%] pointer-events-none rounded-l-2xl opacity-20 dark:opacity-15 transition-opacity"
+        style={{
+          background: `radial-gradient(ellipse at left center, ${homeGlowColor} 0%, transparent 70%)`,
+        }}
+      />
+      <div
+        className="absolute top-0 bottom-0 right-0 w-[35%] pointer-events-none rounded-r-2xl opacity-20 dark:opacity-15 transition-opacity"
+        style={{
+          background: `radial-gradient(ellipse at right center, ${awayGlowColor} 0%, transparent 70%)`,
+        }}
+      />
 
-      {/* Top Banner: Date & League */}
-      <div className={`flex items-center justify-between px-3.5 py-2.5 border-b text-xs ${
-        isDark ? 'bg-slate-950/90 border-slate-800/80 text-slate-300' : 'bg-slate-50 border-slate-100 text-slate-700'
-      }`}>
-        <div className="flex items-center gap-2 font-bold min-w-0">
-          <span className={`font-extrabold text-[11px] truncate ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-            {isAr ? (match.dateAr || match.date) : `${match.date}`}{isUpcoming ? ` • ${match.time}` : ''}
-          </span>
-          <span className={`${isDark ? 'text-slate-700' : 'text-slate-300'} font-light`}>•</span>
-          <span className={`flex items-center gap-1.5 font-extrabold text-[11px] truncate ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
-            <span className="text-sm">{match.leagueIcon || '⚽'}</span>
-            <span className="truncate">{isAr ? match.leagueNameAr : match.leagueName}</span>
-          </span>
-        </div>
-
-        {/* Favorite Toggle & Status */}
+      {/* Top Bar: Controls (Left), Time Pill (Center), League & Date (Right) */}
+      <div className="relative z-10 px-3 sm:px-4 pt-2.5 pb-1 flex items-center justify-between gap-2">
+        {/* Left Side: Circular Favorite & Push Notification Buttons */}
         <div className="flex items-center gap-1.5 shrink-0">
-          {match.isGoogleSynced && (
-            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-black text-[9px] shadow-sm border ${
-              isDark ? 'bg-blue-500/15 border-blue-500/40 text-blue-300' : 'bg-blue-50 border-blue-200 text-blue-700'
-            }`} title={isAr ? 'مُتصل ومُزامن بالوقت الفعلي مع نتائج جوجل المباشرة' : 'Synced with Google Live Scores'}>
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
-              <span>{isAr ? 'جوجل لايف' : 'Live'}</span>
-            </span>
-          )}
-
-          {isLive ? (
-            <div className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-full font-black text-[10px] shadow-sm animate-pulse border ${
-              isDark ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300' : 'bg-emerald-100 border-emerald-300 text-emerald-800'
-            }`}>
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span>{isAr ? `مباشر (${match.minute ? match.minute + "'" : 'شغال'})` : `LIVE (${match.minute ? match.minute + "'" : 'Live'})`}</span>
-            </div>
-          ) : isUpcoming ? (
-            <div className={`flex items-center gap-1 px-2 py-0.5 rounded-xl text-[10px] font-mono font-black border ${
-              isDark ? 'bg-slate-900 border-slate-700 text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-900'
-            }`}>
-              <Clock className="w-3 h-3 text-amber-500" />
-              <span>{match.time}</span>
-            </div>
-          ) : (
-            <div className={`px-2.5 py-0.5 rounded-full border font-black text-[10px] ${
-              isDark ? 'bg-slate-800/90 text-slate-400 border-slate-700/60' : 'bg-slate-100 text-slate-600 border-slate-200'
-            }`}>
-              {isAr ? 'انتهت' : 'FT'}
-            </div>
-          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFavorite(match);
+            }}
+            className={`w-7 h-7 rounded-full border transition-all flex items-center justify-center cursor-pointer shadow-xs active:scale-90 ${
+              isFavorite
+                ? 'bg-rose-50 border-rose-200 text-rose-500 dark:bg-rose-950/50 dark:border-rose-800'
+                : isDark
+                ? 'bg-slate-800/90 border-slate-700 text-slate-300 hover:text-rose-400 hover:border-rose-400'
+                : 'bg-white/90 border-slate-200 text-slate-600 hover:text-rose-500 hover:border-rose-300'
+            }`}
+            title={isAr ? 'إضافة للمفضلة' : 'Add to Favorites'}
+          >
+            <Heart className={`w-3.5 h-3.5 ${isFavorite ? 'fill-rose-500 text-rose-500' : ''}`} />
+          </button>
 
           <button
             onClick={(e) => {
               e.stopPropagation();
               if (onOpenSubscribeModal) onOpenSubscribeModal(match);
             }}
-            className={`p-1.5 rounded-xl border transition-all cursor-pointer active:scale-90 ${
+            className={`w-7 h-7 rounded-full border transition-all flex items-center justify-center cursor-pointer shadow-xs active:scale-90 ${
               isSubscribed
-                ? 'bg-amber-500/20 text-amber-500 border-amber-500/50 ring-1 ring-amber-400/30'
+                ? 'bg-amber-50 border-amber-300 text-amber-600 dark:bg-amber-950/50 dark:border-amber-700'
                 : isDark
-                  ? 'bg-slate-900 text-slate-400 border-slate-800 hover:text-amber-300 hover:bg-slate-800'
-                  : 'bg-slate-100 text-slate-500 border-slate-200 hover:text-amber-600 hover:bg-slate-200'
+                ? 'bg-slate-800/90 border-slate-700 text-slate-300 hover:text-amber-400 hover:border-amber-400'
+                : 'bg-white/90 border-slate-200 text-slate-600 hover:text-amber-500 hover:border-amber-300'
             }`}
             title={isAr ? 'تفعيل تنبيهات الإشعارات المباشرة' : 'Subscribe to Push Alerts'}
           >
             <Bell className={`w-3.5 h-3.5 ${isSubscribed ? 'fill-amber-500 text-amber-500' : ''}`} />
           </button>
+        </div>
 
-          <button
-            onClick={() => onToggleFavorite(match)}
-            className={`p-1.5 rounded-xl border transition-all cursor-pointer active:scale-90 ${
-              isDark
-                ? 'bg-slate-900 text-slate-400 border-slate-800 hover:text-rose-400 hover:bg-slate-800'
-                : 'bg-slate-100 text-slate-500 border-slate-200 hover:text-rose-500 hover:bg-slate-200'
-            }`}
-            title={isAr ? 'إضافة للمفضلة' : 'Add to Favorites'}
-          >
-            <Heart className={`w-3.5 h-3.5 ${isFavorite ? 'fill-rose-500 text-rose-500' : ''}`} />
-          </button>
+        {/* Center: Kickoff Time / Live Status Pill Badge (Lime Theme matching screenshot) */}
+        <div className="shrink-0">
+          {isLive ? (
+            <div className="bg-emerald-500/15 border border-emerald-500/50 text-emerald-700 dark:text-emerald-300 px-2.5 py-0.5 rounded-full text-[11px] font-black flex items-center gap-1.5 shadow-xs animate-pulse">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+              <span>
+                {isAr
+                  ? playedMinute.includes('بين') || playedMinute.includes('HT')
+                    ? playedMinute
+                    : `مباشر (${playedMinute})`
+                  : `LIVE (${playedMinute})`}
+              </span>
+            </div>
+          ) : isFinished ? (
+            <div className="bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 px-2.5 py-0.5 rounded-full text-[11px] font-black flex items-center gap-1 shadow-xs">
+              <CheckCircle className="w-3 h-3 text-emerald-500" />
+              <span>{isAr ? 'انتهت' : 'FT'}</span>
+            </div>
+          ) : (
+            <div className="bg-[#f4fae2] dark:bg-[#2d3a12] border border-[#d9f99d] dark:border-[#4d7c0f]/60 text-[#3f6212] dark:text-[#bef264] px-3 py-0.5 rounded-full text-xs font-black flex items-center gap-1 shadow-xs">
+              <span className="font-mono font-black">{match.time}</span>
+              <Clock className="w-3 h-3 text-[#65a30d]" />
+            </div>
+          )}
+        </div>
+
+        {/* Right Side: Date & Competition Header */}
+        <div className="text-right rtl:text-right ltr:text-left min-w-0">
+          <div className="text-[11px] font-extrabold text-slate-700 dark:text-slate-300 truncate">
+            {match.dayLabelAr || match.dateAr || match.date}
+          </div>
+          <div className="flex items-center justify-end gap-1 text-[11px] sm:text-xs font-black text-slate-900 dark:text-white truncate">
+            <span className="truncate">{isAr ? match.leagueNameAr : match.leagueName}</span>
+            <span className="text-sm shrink-0">{match.leagueIcon || '⚽'}</span>
+          </div>
         </div>
       </div>
 
-      {/* Main Scoreboard Content */}
-      <div 
-        onClick={() => onOpenDetails(match, 'lineup')}
-        className={`p-3.5 sm:p-4 cursor-pointer grid grid-cols-7 items-center gap-2 transition-colors ${
-          isDark
-            ? 'bg-gradient-to-b from-slate-900/60 to-slate-950/90 hover:bg-slate-900/90'
-            : 'bg-white hover:bg-slate-50/80'
-        }`}
+      {/* Main Scoreboard: Home Team | Center Board (Time/Countdown or Score) | Away Team */}
+      <div
+        onClick={() => onOpenDetails(match, isFinished ? 'stats' : 'lineup')}
+        className="relative z-10 px-3 sm:px-4 py-2 cursor-pointer grid grid-cols-7 items-center gap-1.5 select-none"
       >
-        {/* Home Team */}
-        <div className="col-span-3 flex flex-col items-center sm:items-start text-center sm:text-left rtl:sm:text-right gap-1.5 min-w-0">
-          <div className="relative group-hover:scale-110 transition-transform duration-200">
+        {/* Home Team (Left side in LTR layout, right side in RTL or aligned) */}
+        <div className="col-span-2 sm:col-span-2 flex flex-col items-center text-center gap-0.5 min-w-0">
+          <div className="relative hover:scale-105 transition-transform duration-200">
             <TeamLogo
               teamName={match.homeTeam}
               logo={match.homeLogo}
-              sizeClassName="w-12 h-12 sm:w-13 sm:h-13"
-              className="drop-shadow-sm"
+              sizeClassName="w-11 h-11 sm:w-13 sm:h-13"
+              className="drop-shadow-sm object-contain"
             />
           </div>
-          <div className="w-full">
-            <span className={`block font-black text-xs sm:text-sm line-clamp-1 tracking-tight ${
-              isDark ? 'text-slate-100' : 'text-slate-900'
-            }`}>
+          <div className="w-full mt-0.5">
+            <span className="block font-black text-[11px] sm:text-xs text-slate-900 dark:text-white tracking-tight line-clamp-1">
               {match.homeTeam}
             </span>
             {isAr && match.homeTeamAr && (
-              <span className={`block text-[10px] font-semibold line-clamp-1 ${
-                isDark ? 'text-slate-400' : 'text-slate-500'
-              }`}>
+              <span className="block font-bold text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">
                 {match.homeTeamAr}
               </span>
             )}
           </div>
         </div>
 
-        {/* Center Timer Badge / Versus / Score */}
-        <div className="col-span-1 flex flex-col items-center justify-center text-center gap-1">
+        {/* Center Display: Date, Kickoff Time, and Mint Countdown Box (or Live/Final Scores) */}
+        <div className="col-span-3 sm:col-span-3 flex flex-col items-center justify-center text-center gap-0.5">
           {isUpcoming ? (
-            <div className="flex flex-col items-center gap-1">
-              <span className={`text-[10px] font-extrabold ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                {match.dateAr || 'اليوم'}
+            <div className="flex flex-col items-center w-full max-w-[170px]">
+              <span className="font-extrabold text-[11px] text-slate-700 dark:text-slate-300">
+                {match.dayLabelAr || match.dateAr || 'اليوم'}
               </span>
-              <div className={`text-base sm:text-lg font-black tracking-tight font-mono ${
-                isDark ? 'text-white' : 'text-slate-900'
-              }`}>
+
+              <div className="font-black text-2xl sm:text-3xl font-mono text-slate-900 dark:text-white tracking-tight my-0">
                 {match.time}
               </div>
-              <div className={`px-2 py-0.5 font-mono font-black text-[9px] tracking-wider rounded-lg border shadow-inner whitespace-nowrap ${
-                isDark ? 'bg-slate-950 text-cyan-400 border-cyan-500/30' : 'bg-teal-50 text-teal-800 border-teal-200'
-              }`}>
-                {countdownStr}
+
+              {/* Mint Countdown Badge ("الوقت المتبقي") in a compact straight line */}
+              <div className="border border-[#99f6e4] dark:border-[#115e59] bg-[#f0fdfa] dark:bg-[#042f2e]/70 rounded-full px-2.5 py-0.5 inline-flex items-center justify-center gap-1.5 shadow-xs whitespace-nowrap">
+                <span className="text-[9px] sm:text-[10px] font-bold text-[#0d9488] dark:text-[#2dd4bf]">
+                  {isAr ? 'الوقت المتبقي:' : 'Time Left:'}
+                </span>
+                <span className="font-mono text-[10px] sm:text-[11px] font-black text-[#0f766e] dark:text-[#5eead4] tracking-wider" dir="ltr">
+                  {countdownParts.days}:{countdownParts.hours}:{countdownParts.minutes}:{countdownParts.seconds}
+                </span>
               </div>
             </div>
           ) : (
-            <div className="flex flex-col items-center gap-1">
+            <div className="flex flex-col items-center gap-0.5">
               {isLive && (
-                <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border flex items-center gap-1 animate-pulse shadow-sm ${
-                  isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                }`}>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                  <span>{match.minute ? (isAr ? `د ${match.minute}'` : `${match.minute}'`) : (isAr ? 'مباشر' : 'LIVE')}</span>
+                <span className="text-[9px] font-black px-2 py-0.5 rounded-full border flex items-center gap-1 animate-pulse shadow-sm bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40">
+                  <span className="w-1 h-1 rounded-full bg-emerald-500"></span>
+                  <span>
+                    {isAr
+                      ? playedMinute.includes('بين') || playedMinute.includes('HT')
+                        ? playedMinute
+                        : `د ${playedMinute.replace("'", '')}`
+                      : playedMinute}
+                  </span>
                 </span>
               )}
-              <div className={`flex items-center gap-1.5 font-black text-2xl sm:text-3xl font-mono px-3 py-1 rounded-xl border shadow-inner ${
-                isDark ? 'bg-slate-950 text-white border-slate-800' : 'bg-slate-100 text-slate-900 border-slate-200'
-              }`}>
-                <span className={match.homeScore > match.awayScore ? 'text-emerald-500 font-black' : isDark ? 'text-slate-200' : 'text-slate-800'}>
+
+              {isFinished && (
+                <span className="text-[9px] font-black px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                  {isAr ? 'نهاية المباراة' : 'Full Time'}
+                </span>
+              )}
+
+              <div className="flex items-center justify-center gap-1.5 font-black text-2xl sm:text-3xl font-mono text-slate-900 dark:text-white my-0.5">
+                <span className={match.homeScore > match.awayScore ? 'text-emerald-600 dark:text-emerald-400' : ''}>
                   {match.homeScore}
                 </span>
-                <span className={`${isDark ? 'text-slate-600' : 'text-slate-400'} text-lg font-light`}>-</span>
-                <span className={match.awayScore > match.homeScore ? 'text-emerald-500 font-black' : isDark ? 'text-slate-200' : 'text-slate-800'}>
+                <span className="text-slate-300 dark:text-slate-600 font-light">-</span>
+                <span className={match.awayScore > match.homeScore ? 'text-emerald-600 dark:text-emerald-400' : ''}>
                   {match.awayScore}
                 </span>
               </div>
 
-              {/* User Prediction or Unpredicted status right under live / final score */}
+              {/* User Prediction Summary Badge */}
               {userPrediction ? (
-                <div className={`mt-1 px-2 py-0.5 rounded-lg text-[10px] font-black tracking-tight whitespace-nowrap flex items-center justify-center gap-1 border shadow-xs ${
-                  match.status === 'FINISHED'
-                    ? (match.homeScore === userPrediction.predictedHomeScore && match.awayScore === userPrediction.predictedAwayScore)
-                      ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/40 ring-1 ring-emerald-500/30'
-                      : isDark ? 'bg-slate-900 text-slate-300 border-slate-700' : 'bg-slate-100 text-slate-700 border-slate-300'
-                    : isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-amber-50 text-amber-800 border-amber-300'
-                }`}>
+                <div
+                  className={`px-2 py-0.5 rounded-lg text-[9px] font-black tracking-tight whitespace-nowrap flex items-center justify-center gap-1 border shadow-xs ${
+                    isFinished
+                      ? match.homeScore === userPrediction.predictedHomeScore &&
+                        match.awayScore === userPrediction.predictedAwayScore
+                        ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/40 ring-1 ring-emerald-500/30'
+                        : isDark
+                        ? 'bg-slate-900 text-slate-300 border-slate-700'
+                        : 'bg-slate-100 text-slate-700 border-slate-300'
+                      : isDark
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                      : 'bg-amber-50 text-amber-800 border-amber-300'
+                  }`}
+                >
                   <span>🎯</span>
                   <span>{isAr ? 'توقعك:' : 'Pred:'}</span>
                   <span className="font-mono font-black">{userPrediction.predictedHomeScore}</span>
                   <span className="text-slate-400 font-bold">-</span>
                   <span className="font-mono font-black">{userPrediction.predictedAwayScore}</span>
-                  {match.status === 'FINISHED' && match.homeScore === userPrediction.predictedHomeScore && match.awayScore === userPrediction.predictedAwayScore && (
-                    <span className="text-emerald-500 font-black">✓</span>
-                  )}
+                  {isFinished &&
+                    match.homeScore === userPrediction.predictedHomeScore &&
+                    match.awayScore === userPrediction.predictedAwayScore && (
+                      <span className="text-emerald-500 font-bold">✓ (+٥٠ كوينز)</span>
+                    )}
                 </div>
               ) : (
-                <div className={`mt-1 px-2 py-0.5 rounded-lg text-[9px] font-extrabold tracking-tight whitespace-nowrap flex items-center justify-center gap-1 border ${
-                  isDark ? 'bg-slate-950/80 text-slate-400 border-slate-800' : 'bg-slate-100 text-slate-500 border-slate-200'
-                }`}>
+                <div
+                  className={`px-2 py-0.5 rounded-lg text-[9px] font-extrabold tracking-tight whitespace-nowrap flex items-center justify-center gap-1 border ${
+                    isDark ? 'bg-slate-950/80 text-slate-400 border-slate-800' : 'bg-slate-100 text-slate-500 border-slate-200'
+                  }`}
+                >
                   <span className="text-rose-400">❌</span>
                   <span>{isAr ? 'لم تتوقع' : 'No pred'}</span>
                 </div>
@@ -267,26 +308,22 @@ export const MatchCard: React.FC<MatchCardProps> = ({
           )}
         </div>
 
-        {/* Away Team */}
-        <div className="col-span-3 flex flex-col items-center sm:items-end text-center sm:text-right rtl:sm:text-left gap-1.5 min-w-0">
-          <div className="relative group-hover:scale-110 transition-transform duration-200">
+        {/* Away Team (Right side in LTR layout) */}
+        <div className="col-span-2 sm:col-span-2 flex flex-col items-center text-center gap-0.5 min-w-0">
+          <div className="relative hover:scale-105 transition-transform duration-200">
             <TeamLogo
               teamName={match.awayTeam}
               logo={match.awayLogo}
-              sizeClassName="w-12 h-12 sm:w-13 sm:h-13"
-              className="drop-shadow-sm"
+              sizeClassName="w-11 h-11 sm:w-13 sm:h-13"
+              className="drop-shadow-sm object-contain"
             />
           </div>
-          <div className="w-full">
-            <span className={`block font-black text-xs sm:text-sm line-clamp-1 tracking-tight ${
-              isDark ? 'text-slate-100' : 'text-slate-900'
-            }`}>
+          <div className="w-full mt-0.5">
+            <span className="block font-black text-[11px] sm:text-xs text-slate-900 dark:text-white tracking-tight line-clamp-1">
               {match.awayTeam}
             </span>
             {isAr && match.awayTeamAr && (
-              <span className={`block text-[10px] font-semibold line-clamp-1 ${
-                isDark ? 'text-slate-400' : 'text-slate-500'
-              }`}>
+              <span className="block font-bold text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">
                 {match.awayTeamAr}
               </span>
             )}
@@ -294,51 +331,60 @@ export const MatchCard: React.FC<MatchCardProps> = ({
         </div>
       </div>
 
-      {/* Quick Action Footer */}
-      <div className={`px-3 py-2 border-t flex items-center justify-between text-[11px] font-black gap-2 ${
-        isDark ? 'bg-slate-950/70 border-slate-800/80' : 'bg-slate-50/80 border-slate-100'
-      }`}>
+      {/* Action Buttons Row (Exact 3-button layout matching screenshot) */}
+      <div className="relative z-10 px-3 sm:px-4 py-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-1.5 sm:gap-2">
+        {/* Stats Button */}
         <button
-          onClick={() => onOpenDetails(match, 'lineup')}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-xl border transition-all cursor-pointer active:scale-95 shadow-sm ${
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenDetails(match, 'stats');
+          }}
+          className={`flex-1 py-1.5 px-2 rounded-xl border transition-all cursor-pointer active:scale-95 shadow-xs flex items-center justify-center gap-1 text-[11px] sm:text-xs font-black ${
             isDark
-              ? 'bg-slate-900/90 border-slate-800 text-slate-300 hover:text-emerald-300 hover:border-emerald-500/40 hover:bg-slate-800'
-              : 'bg-white border-slate-200 text-slate-700 hover:text-emerald-700 hover:border-emerald-300 hover:bg-slate-50'
-          }`}
-        >
-          <Shield className="w-3.5 h-3.5 text-emerald-500" />
-          <span>{isAr ? 'التشكيلة' : 'Lineups'}</span>
-        </button>
-
-        <button
-          onClick={() => onOpenDetails(match, 'ai')}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-xl border transition-all text-[11px] font-black cursor-pointer active:scale-95 shadow-sm ${
-            isDark
-              ? 'bg-teal-950/40 border-teal-500/40 text-teal-300 hover:text-teal-200 hover:bg-teal-900/50'
-              : 'bg-teal-50 border-teal-200 text-teal-800 hover:text-teal-900 hover:bg-teal-100'
-          }`}
-        >
-          <Sparkles className="w-3.5 h-3.5 text-teal-500 animate-pulse" />
-          <span>{isAr ? 'تحليل AI 🤖' : 'AI Analyst 🤖'}</span>
-        </button>
-
-        <button
-          onClick={() => onOpenDetails(match, 'stats')}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-xl border transition-all cursor-pointer active:scale-95 shadow-sm ${
-            isDark
-              ? 'bg-slate-900/90 border-slate-800 text-slate-300 hover:text-amber-300 hover:border-amber-500/40 hover:bg-slate-800'
-              : 'bg-white border-slate-200 text-slate-700 hover:text-amber-700 hover:border-amber-300 hover:bg-slate-50'
+              ? 'bg-slate-800/90 border-slate-700 text-slate-200 hover:bg-slate-700 hover:text-amber-300'
+              : 'bg-white border-slate-200/90 text-slate-800 hover:bg-slate-50 hover:border-slate-300'
           }`}
         >
           <Activity className="w-3.5 h-3.5 text-amber-500" />
           <span>{isAr ? 'الإحصائيات' : 'Stats'}</span>
         </button>
+
+        {/* AI Analysis Button (Mint Highlighted Theme) */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenDetails(match, 'ai');
+          }}
+          className={`flex-[1.1] py-1.5 px-2.5 rounded-xl border transition-all cursor-pointer active:scale-95 shadow-xs flex items-center justify-center gap-1.5 text-[11px] sm:text-xs font-black ${
+            isDark
+              ? 'bg-[#042f2e]/80 border-[#14b8a6] text-[#5eead4] hover:bg-[#115e59]'
+              : 'bg-[#f0fdfa] border-[#5eead4] text-[#0f766e] hover:bg-[#ccfbf1]'
+          }`}
+        >
+          <span className="text-sm select-none">🤖</span>
+          <span>{isAr ? 'تحليل AI' : 'AI Analysis'}</span>
+          <Sparkles className="w-3.5 h-3.5 text-teal-500 animate-pulse" />
+        </button>
+
+        {/* Lineups Button */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenDetails(match, 'lineup');
+          }}
+          className={`flex-1 py-1.5 px-2 rounded-xl border transition-all cursor-pointer active:scale-95 shadow-xs flex items-center justify-center gap-1 text-[11px] sm:text-xs font-black ${
+            isDark
+              ? 'bg-slate-800/90 border-slate-700 text-slate-200 hover:bg-slate-700 hover:text-emerald-300'
+              : 'bg-white border-slate-200/90 text-slate-800 hover:bg-slate-50 hover:border-slate-300'
+          }`}
+        >
+          <Shield className="w-3.5 h-3.5 text-emerald-500" />
+          <span>{isAr ? 'التشكيلة' : 'Lineup'}</span>
+        </button>
       </div>
 
-      {/* Prominent Predict Now Button */}
-      <div className={`p-3 border-t ${
-        isDark ? 'bg-gradient-to-b from-slate-950/95 to-slate-900/95 border-slate-800/80' : 'bg-slate-50 border-slate-200'
-      }`}>
+      {/* Bottom Prediction / Points Banner Row */}
+      <div className="relative z-10 px-3 sm:px-4 pb-2.5 pt-0">
         {isPredictionAllowed ? (
           userPrediction ? (
             <button
@@ -346,17 +392,21 @@ export const MatchCard: React.FC<MatchCardProps> = ({
                 e.stopPropagation();
                 onOpenDetails(match, 'predict');
               }}
-              className={`w-full py-2.5 px-3 border rounded-2xl flex items-center justify-center gap-2 shadow transition-all hover:scale-[1.01] active:scale-95 cursor-pointer font-black text-xs sm:text-sm ${
+              className={`w-full py-2 px-3 border rounded-xl flex items-center justify-between gap-1.5 shadow-xs transition-all hover:scale-[1.01] active:scale-95 cursor-pointer font-black text-xs ${
                 isDark
-                  ? 'bg-gradient-to-r from-emerald-950 via-slate-900 to-emerald-950 border-emerald-400/80 text-emerald-200'
+                  ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-200'
                   : 'bg-emerald-50 border-emerald-400 text-emerald-900 hover:bg-emerald-100'
               }`}
             >
-              <span className="text-base">🎯</span>
-              <span>
-                {isAr
-                  ? `توقعك: ${userPrediction.predictedHomeScore} - ${userPrediction.predictedAwayScore} (تعديل ✏️)`
-                  : `Your Prediction: ${userPrediction.predictedHomeScore} - ${userPrediction.predictedAwayScore} (Edit ✏️)`}
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm">🎯</span>
+                <span>{isAr ? 'توقعك المسجل للمباراة:' : 'Your Prediction:'}</span>
+                <span className="font-mono font-black text-emerald-700 dark:text-emerald-300">
+                  {userPrediction.predictedHomeScore} - {userPrediction.predictedAwayScore}
+                </span>
+              </div>
+              <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-extrabold">
+                {isAr ? '(تعديل ✏️)' : '(Edit ✏️)'}
               </span>
             </button>
           ) : (
@@ -365,67 +415,41 @@ export const MatchCard: React.FC<MatchCardProps> = ({
                 e.stopPropagation();
                 onOpenDetails(match, 'predict');
               }}
-              className="w-full py-3 px-3 bg-gradient-to-r from-amber-500 via-emerald-600 to-teal-500 hover:from-amber-400 hover:to-emerald-400 text-white font-black text-xs sm:text-sm rounded-2xl flex items-center justify-center gap-2 shadow-md transition-all hover:scale-[1.01] active:scale-95 cursor-pointer"
+              className="w-full py-2 px-3 bg-gradient-to-r from-amber-500 via-emerald-600 to-teal-500 hover:from-amber-400 hover:to-emerald-400 text-white font-black text-xs rounded-xl flex items-center justify-center gap-1.5 shadow-sm transition-all hover:scale-[1.01] active:scale-95 cursor-pointer"
             >
-              <span className="text-base animate-bounce">🎯</span>
-              <span className="tracking-wide">{isAr ? 'توقع الآن واربح ٥٠ كوينز 🪙' : 'Predict Now & Win +50 Coins 🪙'}</span>
+              <span className="text-sm animate-bounce">🎯</span>
+              <span className="tracking-wide">
+                {match.predictionFeeCoins ? (
+                  isAr
+                    ? `توقع الآن واربح ${match.customCoinsReward || 150} كوينز 🪙 (رسوم ${match.predictionFeeCoins} كوينز)`
+                    : `Predict & Win +${match.customCoinsReward || 150} Coins 🪙 (Fee: ${match.predictionFeeCoins})`
+                ) : match.customCoinsReward ? (
+                  isAr
+                    ? `توقع الآن واربح ${match.customCoinsReward} كوينز 🪙`
+                    : `Predict Now & Win +${match.customCoinsReward} Coins 🪙`
+                ) : (
+                  isAr ? 'توقع الآن واربح ٥٠ كوينز 🪙' : 'Predict Now & Win +50 Coins 🪙'
+                )}
+              </span>
             </button>
           )
-        ) : (
-          userPrediction ? (
-            <div className={`w-full py-2.5 px-3 rounded-2xl flex items-center justify-between border font-black text-xs sm:text-sm gap-2 flex-wrap sm:flex-nowrap ${
-              match.status === 'FINISHED'
-                ? (match.homeScore === userPrediction.predictedHomeScore && match.awayScore === userPrediction.predictedAwayScore)
-                  ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-600 dark:text-emerald-400'
-                  : isDark ? 'bg-slate-900/90 border-slate-800 text-slate-300' : 'bg-slate-100 border-slate-300 text-slate-700'
-                : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400'
-            }`}>
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span>🎯</span>
-                <span className="font-bold text-xs">
-                  {isAr ? 'توقعك للمباراة:' : 'Your Prediction:'}
-                </span>
-                <div className="inline-flex items-center gap-1 font-mono font-black text-amber-600 dark:text-amber-300 bg-amber-500/10 dark:bg-amber-500/20 px-2 py-0.5 rounded-lg border border-amber-500/30 text-xs">
-                  <span>{isAr ? (match.homeTeamAr || match.homeTeam) : match.homeTeam}</span>
-                  <span className="text-emerald-600 dark:text-emerald-400 font-bold">{userPrediction.predictedHomeScore}</span>
-                  <span className="text-slate-400">-</span>
-                  <span className="text-teal-600 dark:text-teal-400 font-bold">{userPrediction.predictedAwayScore}</span>
-                  <span>{isAr ? (match.awayTeamAr || match.awayTeam) : match.awayTeam}</span>
-                </div>
-              </div>
-              {match.status === 'FINISHED' ? (
-                <span className={`text-[11px] px-2.5 py-0.5 rounded-full font-extrabold shadow-xs whitespace-nowrap ${
-                  (match.homeScore === userPrediction.predictedHomeScore && match.awayScore === userPrediction.predictedAwayScore)
-                    ? 'bg-emerald-500 text-white'
-                    : isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'
-                }`}>
-                  {(match.homeScore === userPrediction.predictedHomeScore && match.awayScore === userPrediction.predictedAwayScore)
-                    ? (isAr ? 'توقع صحيح (+٥٠ كوينز) 🏆' : 'Exact (+50 Coins) 🏆')
-                    : (isAr ? 'لم يصب التوقع' : 'Missed')}
-                </span>
-              ) : (
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-300 font-bold border border-amber-500/30 whitespace-nowrap">
-                  {isAr ? 'المباراة جارية' : 'Match Live'}
-                </span>
-              )}
+        ) : isFinished ? (
+          <div
+            className={`w-full py-1.5 px-2.5 rounded-xl flex items-center justify-between border font-bold text-[11px] ${
+              isDark ? 'bg-slate-900/80 border-slate-800 text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-700'
+            }`}
+          >
+            <div className="flex items-center gap-1 font-black text-emerald-600 dark:text-emerald-400">
+              <Sparkles className="w-3 h-3 text-emerald-500" />
+              <span>{isAr ? '✨ تم توزيع النقاط والكوينز لهذه المباراة' : '✨ Points & Coins distributed for this match'}</span>
             </div>
-          ) : (
-            <div className={`w-full py-2.5 px-3 rounded-2xl flex items-center justify-between border font-bold text-xs ${
-              isDark ? 'bg-slate-950/80 border-slate-800 text-slate-400' : 'bg-slate-100 border-slate-300 text-slate-600'
-            }`}>
-              <div className="flex items-center gap-2">
-                <span className="text-rose-500 font-bold text-sm">❌</span>
-                <span className="font-extrabold text-slate-200 dark:text-slate-300">
-                  {isAr ? 'لم تقم بالتوقع لهذا الماتش' : 'You did not predict this match'}
-                </span>
-              </div>
-              <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-900 text-slate-400 border border-slate-800">
-                {isAr ? 'التوقع مغلق 🔒' : 'Predictions Closed 🔒'}
-              </span>
-            </div>
-          )
-        )}
+            <span className="font-mono font-bold text-[10px] text-slate-500">
+              {match.homeScore} - {match.awayScore}
+            </span>
+          </div>
+        ) : null}
       </div>
     </div>
   );
 };
+

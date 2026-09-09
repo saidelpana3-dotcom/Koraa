@@ -18,8 +18,26 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
   const [pwaMsg, setPwaMsg] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState<boolean>(false);
   const [apkHelpNotice, setApkHelpNotice] = useState<boolean>(false);
+  const [platformTab, setPlatformTab] = useState<'android' | 'ios'>('android');
+  const [detectedPlatform, setDetectedPlatform] = useState<'android' | 'ios' | 'other'>('other');
 
   useEffect(() => {
+    // Detect mobile OS environment
+    const ua = window.navigator.userAgent || '';
+    const isIOSDevice = /iPad|iPhone|iPod/.test(ua) && !(window as any).MSStream;
+    const isAndroidDevice = /Android/.test(ua);
+
+    if (isIOSDevice) {
+      setDetectedPlatform('ios');
+      setPlatformTab('ios');
+    } else if (isAndroidDevice) {
+      setDetectedPlatform('android');
+      setPlatformTab('android');
+    } else {
+      setDetectedPlatform('other');
+      setPlatformTab('android');
+    }
+
     // Check if already running in standalone PWA mode
     const checkStandalone = () => {
       const isStandaloneMode =
@@ -155,17 +173,21 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
                 <h3 className="font-black text-white text-sm sm:text-base tracking-tight">
-                  {isAr ? 'ثبت تطبيق كورة على جهازك 📱' : 'Install Kora App on Your Device 📱'}
+                  {isAr 
+                    ? (detectedPlatform === 'ios' ? 'ثبت تطبيق كورة على آيفون 🍏' : detectedPlatform === 'android' ? 'ثبت تطبيق كورة على أندرويد 🤖' : 'ثبت تطبيق كورة على هاتفك 📱')
+                    : (detectedPlatform === 'ios' ? 'Install Kora on iPhone 🍏' : detectedPlatform === 'android' ? 'Install Kora on Android 🤖' : 'Install Kora on Your Phone 📱')}
                 </h3>
-                <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
                   <Sparkles className="w-3 h-3 mr-1" />
-                  {isAr ? 'سريع ومجاني' : 'Fast & Free'}
+                  {isAr ? 'أندرويد وآيفون' : 'Android & iOS'}
                 </span>
               </div>
               <p className="text-xs text-slate-300 mt-0.5 line-clamp-1 sm:line-clamp-none">
                 {isAr
-                  ? 'افتح الموقع بنقرة واحدة مباشرة كأنه تطبيق بدون فتح المتصفح'
-                  : 'Open the app directly with one tap without opening the browser'}
+                  ? (detectedPlatform === 'ios' 
+                      ? 'يعمل كتطبيق أصلي على آيفون وسفاري بملء الشاشة وسرعة فائقة'
+                      : 'تطبيق سريع خفيف يدعم الإشعارات الفورية والتثبيت بنقرة واحدة')
+                  : 'Fast install directly on Android and iPhone with fullscreen support'}
               </p>
             </div>
           </div>
@@ -178,7 +200,7 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
               className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-400 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs sm:text-sm shadow-lg shadow-emerald-900/40 hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer border border-emerald-300"
             >
               <Download className="w-4 h-4 text-slate-950 animate-bounce" />
-              <span>{isAr ? 'ثبت الآن' : 'Install Now'}</span>
+              <span>{isAr ? 'تثبيت التطبيق' : 'Install App'}</span>
             </button>
 
             <button
@@ -194,7 +216,7 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
       </div>
       )}
 
-      {/* Installation Guide Modal (For iOS / Browsers where prompt requires manual step) */}
+      {/* Installation Guide Modal (For iOS & Android) */}
       {showGuideModal && (
         <div 
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in"
@@ -205,21 +227,21 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
           }}
         >
           <div 
-            className="bg-slate-900 border-2 border-emerald-500/40 rounded-3xl max-w-md w-full p-6 shadow-2xl relative overflow-hidden text-right rtl:text-right"
+            className="bg-slate-900 border-2 border-emerald-500/40 rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl relative overflow-hidden text-right rtl:text-right"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+            <div className="flex items-center justify-between pb-3.5 border-b border-slate-800">
               <div className="flex items-center gap-2.5">
                 <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 p-0.5 shadow-md shrink-0 overflow-hidden bg-slate-950 flex items-center justify-center">
                   <img src={KORA_LOGO_BASE64 || "/kora-logo.png"} alt="كورة" className="w-full h-full object-cover rounded-[10px]" />
                 </div>
                 <div>
                   <h3 className="font-extrabold text-white text-base">
-                    {isAr ? 'طريقة تثبيت تطبيق كورة' : 'How to Install Kora App'}
+                    {isAr ? 'تثبيت تطبيق كورة على الهاتف' : 'Install Kora on Mobile'}
                   </h3>
                   <p className="text-xs text-slate-400">
-                    {isAr ? 'خطوات بسيطة لإضافة التطبيق لشاشتك الرئيسية' : 'Easy steps to add to Home Screen'}
+                    {isAr ? 'متوافق بالكامل مع هواتف أندرويد وآيفون' : 'Fully compatible with Android & iPhone'}
                   </p>
                 </div>
               </div>
@@ -238,56 +260,153 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
               </button>
             </div>
 
-            {/* Steps & PWA Installation Body */}
-            <div className="py-4 space-y-4 text-xs sm:text-sm text-slate-200">
+            {/* Platform Selector Tabs */}
+            <div className="pt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setPlatformTab('android')}
+                className={`py-2 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  platformTab === 'android'
+                    ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-950/40 border border-emerald-400/40'
+                    : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border border-slate-700'
+                }`}
+              >
+                <span>🤖</span>
+                <span>{isAr ? 'أندرويد (Android)' : 'Android'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPlatformTab('ios')}
+                className={`py-2 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  platformTab === 'ios'
+                    ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-950/40 border border-emerald-400/40'
+                    : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border border-slate-700'
+                }`}
+              >
+                <span>🍏</span>
+                <span>{isAr ? 'آيفون (iPhone / iOS)' : 'iPhone (iOS)'}</span>
+              </button>
+            </div>
+
+            {/* Platform-Specific Body */}
+            <div className="py-3.5 space-y-3.5 text-xs sm:text-sm text-slate-200">
               
-              {/* PWA Install Action Box */}
-              <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-950 via-slate-950 to-teal-950 border border-emerald-500/50 shadow-inner space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="w-5 h-5 text-amber-400 animate-bounce" />
-                    <span className="font-extrabold text-white text-sm">
-                      {isAr ? 'تثبيت سريع ومباشر على الشاشة الرئيسية' : 'Instant Direct Home Screen Install'}
-                    </span>
-                  </div>
-                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
-                    PWA Web App ⚡
-                  </span>
-                </div>
-
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  {isAr 
-                    ? 'يتم تثبيت التطبيق مباشرة على هاتفك بنقرة واحدة بدون الحاجة لتنزيل ملفات خارجية أو فك ضغط.'
-                    : 'Installs directly onto your device with one click as a Progressive Web App.'}
-                </p>
-
-                <div className="flex flex-col gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={handlePwaInstall}
-                    className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-400 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs sm:text-sm text-center shadow-lg shadow-emerald-900/50 flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95"
-                  >
-                    <Smartphone className="w-4 h-4 text-slate-950" />
-                    <span>{isAr ? 'اضغط هنا للتثبيت الفوري على الشاشة الرئيسية 📱' : 'Click Here for Instant Install 📱'}</span>
-                  </button>
-
-                  {pwaMsg && (
-                    <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs font-semibold leading-relaxed animate-fadeIn">
-                      {pwaMsg}
+              {/* ANDROID TAB */}
+              {platformTab === 'android' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 rounded-2xl bg-slate-950 border border-emerald-500/40 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 font-black text-white text-xs">
+                        <Sparkles className="w-4 h-4 text-emerald-400" />
+                        <span>{isAr ? 'تثبيت فوري على أجهزة أندرويد' : 'Instant Android Install'}</span>
+                      </div>
+                      <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                        Chrome / PWA ⚡
+                      </span>
                     </div>
-                  )}
 
-                  {/* Open in new tab button for frame bypass */}
-                  <button
-                    type="button"
-                    onClick={handleOpenInNewTab}
-                    className="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs text-center border border-slate-700 flex items-center justify-center gap-1.5 cursor-pointer transition-all"
-                  >
-                    <ExternalLink className="w-4 h-4 text-emerald-400" />
-                    <span>{isAr ? 'افتح التطبيق في نافذة مستقلة جديدة 🚀' : 'Open App in New Standalone Window 🚀'}</span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={handlePwaInstall}
+                      className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-400 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs text-center shadow-lg flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95"
+                    >
+                      <Smartphone className="w-4 h-4 text-slate-950" />
+                      <span>{isAr ? 'اضغط هنا للتثبيت الفوري 📲' : 'Click Here for Instant Install 📲'}</span>
+                    </button>
+
+                    {pwaMsg && (
+                      <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs font-semibold leading-relaxed animate-fadeIn">
+                        {pwaMsg}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Manual Steps for Android */}
+                  <div className="p-3 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                    <p className="font-bold text-slate-300 text-xs">
+                      {isAr ? 'أو اتبع الخطوات اليدوية عبر متصفح Chrome:' : 'Or manually via Chrome browser:'}
+                    </p>
+                    <ol className="space-y-2 text-xs text-slate-300">
+                      <li className="flex items-start gap-2">
+                        <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center shrink-0 text-[11px] mt-0.5">1</span>
+                        <span>{isAr ? 'افتح قائمة المتصفح بالضغط على زر الخيارات (⋮) أعلى اليمين.' : 'Tap the three-dots menu (⋮) in the top corner.'}</span>
+                      </li>
+                      <li className="flex items-start gap-2">
+                        <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center shrink-0 text-[11px] mt-0.5">2</span>
+                        <span>{isAr ? 'اختر "تثبيت التطبيق" (Install App) أو "إضافة إلى الشاشة الرئيسية".' : 'Select "Install App" or "Add to Home Screen".'}</span>
+                      </li>
+                      <li className="flex items-start gap-2">
+                        <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center shrink-0 text-[11px] mt-0.5">3</span>
+                        <span>{isAr ? 'اضغط "تثبيت" وستظهر أيقونة كورة الرسمية 🏆 على هاتفك فوراً.' : 'Tap "Install" to place the Kora app icon on your device.'}</span>
+                      </li>
+                    </ol>
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* IOS TAB */}
+              {platformTab === 'ios' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 rounded-2xl bg-slate-950 border border-emerald-500/40 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 font-black text-white text-xs">
+                        <Sparkles className="w-4 h-4 text-emerald-400" />
+                        <span>{isAr ? 'طريقة التثبيت على آيفون وسفاري (iOS)' : 'Install on iPhone & Safari (iOS)'}</span>
+                      </div>
+                      <span className="text-[10px] font-bold text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30">
+                        Safari Ready 🍏
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      {isAr 
+                        ? 'على هواتف آيفون يتيح متصفح Safari تثبيت كورة كتطبيق أصلي بملء الشاشة:'
+                        : 'On iPhone, Safari allows installing Kora as a full-screen standalone app:'}
+                    </p>
+
+                    <ol className="space-y-2 text-xs text-slate-200">
+                      <li className="flex items-start gap-2 p-2 rounded-xl bg-slate-900 border border-slate-800">
+                        <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center shrink-0 text-[11px] mt-0.5">1</span>
+                        <div>
+                          <span className="font-bold text-white">{isAr ? 'اضغط على زر المشاركة (Share):' : 'Tap the Share button:'}</span>
+                          <span className="block text-slate-300 text-[11px] mt-0.5">
+                            {isAr ? 'الأيقونة المربعة مع سهم للأعلى [ ⎋ ] أسفل شاشة Safari.' : 'The box icon with an arrow pointing up at the bottom of Safari.'}
+                          </span>
+                        </div>
+                      </li>
+                      <li className="flex items-start gap-2 p-2 rounded-xl bg-slate-900 border border-slate-800">
+                        <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center shrink-0 text-[11px] mt-0.5">2</span>
+                        <div>
+                          <span className="font-bold text-white">{isAr ? 'اختر "إضافة إلى الشاشة الرئيسية":' : 'Select "Add to Home Screen":'}</span>
+                          <span className="block text-slate-300 text-[11px] mt-0.5">
+                            {isAr ? 'مرر للأسفل في القائمة واضغط على [ ➕ إضافة إلى الصفحة الرئيسية ].' : 'Scroll down and tap [ ➕ Add to Home Screen ].'}
+                          </span>
+                        </div>
+                      </li>
+                      <li className="flex items-start gap-2 p-2 rounded-xl bg-slate-900 border border-slate-800">
+                        <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center shrink-0 text-[11px] mt-0.5">3</span>
+                        <div>
+                          <span className="font-bold text-white">{isAr ? 'اضغط على "إضافة" (Add):' : 'Tap "Add":'}</span>
+                          <span className="block text-slate-300 text-[11px] mt-0.5">
+                            {isAr ? 'في الزاوية العلوية، وسيفتح التطبيق من شاشتك بملء الشاشة وبدون شريط Safari.' : 'In the top corner. Kora will now open fullscreen without the URL bar.'}
+                          </span>
+                        </div>
+                      </li>
+                    </ol>
+                  </div>
+                </div>
+              )}
+
+              {/* Open in new tab button */}
+              <button
+                type="button"
+                onClick={handleOpenInNewTab}
+                className="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs text-center border border-slate-700 flex items-center justify-center gap-1.5 cursor-pointer transition-all"
+              >
+                <ExternalLink className="w-4 h-4 text-emerald-400" />
+                <span>{isAr ? 'افتح التطبيق في نافذة مستقلة جديدة 🚀' : 'Open App in New Standalone Window 🚀'}</span>
+              </button>
             </div>
 
             {/* Modal Footer */}

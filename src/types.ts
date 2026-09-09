@@ -40,6 +40,8 @@ export interface MatchEvent {
   score?: string;
   detail?: string;
   detailAr?: string;
+  note?: string;
+  noteAr?: string;
 }
 
 export interface MatchStats {
@@ -121,7 +123,10 @@ export interface Match {
   lastSyncedAt?: string;
   pointsDistributed?: boolean;
   customCoinsReward?: number;
+  predictionFeeCoins?: number;
   isTournamentMatch?: boolean;
+  roundNameAr?: string;
+  mvp?: any;
 }
 
 export interface League {
@@ -198,6 +203,7 @@ export interface PredictionItem {
   status: 'PENDING' | 'EXACT_SCORE' | 'CORRECT_OUTCOME' | 'MISSED';
   pointsEarned: number;
   coinsEarned?: number;
+  coinsSpent?: number;
   correctPredictionsCount?: number;
   evaluatedAt?: string;
   createdAt: string;

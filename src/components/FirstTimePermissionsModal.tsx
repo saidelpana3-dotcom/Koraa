@@ -113,20 +113,20 @@ export const FirstTimePermissionsModal: React.FC<FirstTimePermissionsModalProps>
         {/* Header Badge */}
         <div className="text-center space-y-2.5 mb-6">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-bold shadow-inner">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>{isAr ? 'خطوة الإعداد الأولى والتأكيد' : 'First-Time Setup & Permissions'}</span>
+            <BellRing className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+            <span>{isAr ? '🔔 خطوة ضرورية: تفعيل إشعارات المباريات' : '🔔 Action Required: Enable Match Alerts'}</span>
           </div>
 
           <h2 className="text-xl sm:text-2xl font-black text-white">
             {isAr 
-              ? `أهلاً بك يا ${userName || 'كابتن'}! لنضبط أذوناتك ⚽` 
-              : `Welcome ${userName || 'Captain'}! Let's set up permissions ⚽`}
+              ? `أهلاً بك يا ${userName || 'كابتن'}! فعّل الإشعارات لتصلك المباريات ⚽` 
+              : `Welcome ${userName || 'Captain'}! Enable Notifications Now ⚽`}
           </h2>
 
           <p className="text-xs sm:text-sm text-slate-300 leading-relaxed max-w-md mx-auto">
             {isAr
-              ? 'يرجى تأكيد الأذونات التالية لضمان وصول إشعارات المباريات على هاتفك وحفظ نقاطك وتوقعاتك بأمان.'
-              : 'Please confirm the following permissions to receive match alerts and safely store your prediction points.'}
+              ? 'تصلك إشعارات المباريات على هاتفك قبل انطلاق كل قمة للتوقع، وأهداف فريقك المفضل الحية، ونتائج توقعاتك فور انتهاء الماتش وجوائز الكوينز!'
+              : 'Receive matchday clash alerts on your phone before kickoff, live favorite team goal chimes, and instant prediction coin rewards!'}
           </p>
         </div>
 
@@ -271,12 +271,12 @@ export const FirstTimePermissionsModal: React.FC<FirstTimePermissionsModalProps>
             {isSubmitting ? (
               <>
                 <span className="animate-spin text-lg">⏳</span>
-                <span>{isAr ? 'جاري تفعيل وتأكيد الأذونات...' : 'Activating Permissions...'}</span>
+                <span>{isAr ? 'جاري تفعيل الإشعارات وتأكيد الحساب...' : 'Activating Notifications & Setup...'}</span>
               </>
             ) : (
               <>
-                <CheckCircle2 className="w-5 h-5 text-emerald-200" />
-                <span>{isAr ? 'تأكيد الأذونات وبدء اللعب الآن 🚀' : 'Confirm Permissions & Start Playing 🚀'}</span>
+                <BellRing className="w-5 h-5 text-emerald-200 animate-bounce" />
+                <span>{isAr ? '🔔 تفعيل الإشعارات وبدء اللعب الآن 🚀' : '🔔 Enable Notifications & Start Playing 🚀'}</span>
                 <ChevronRight className="w-4 h-4 rtl:rotate-180" />
               </>
             )}

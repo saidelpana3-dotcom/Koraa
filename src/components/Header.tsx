@@ -1,5 +1,5 @@
 import React from 'react';
-import { Trophy, Newspaper, Heart, Search, Gift, UserCheck, LogIn, Bell, ArrowRight, ArrowLeft, Sun, Moon, X, Radio, RefreshCw } from 'lucide-react';
+import { Trophy, Newspaper, Heart, Search, Gift, UserCheck, LogIn, Bell, ArrowRight, ArrowLeft, Sun, Moon, X, Radio } from 'lucide-react';
 import { Language, ThemeMode } from '../types';
 import { KORA_LOGO_BASE64 } from '../assets/logoBase64';
 
@@ -23,8 +23,8 @@ interface HeaderProps {
   onInstallApp?: () => void;
   activeSubscriptionsCount?: number;
   onOpenNotificationCenter?: () => void;
-  onGoogleSync?: () => void;
-  isSyncingGoogle?: boolean;
+  onFootballSync?: () => void;
+  isSyncingFootball?: boolean;
   onOpenCoinsBreakdown?: () => void;
 }
 
@@ -44,8 +44,8 @@ export const Header: React.FC<HeaderProps> = ({
   activeSubscriptionsCount = 0,
   onOpenNotificationCenter,
   onOpenCoinsBreakdown,
-  onGoogleSync,
-  isSyncingGoogle = false,
+  onFootballSync,
+  isSyncingFootball = false,
 }) => {
   const isAr = language === 'ar';
   const isDark = theme === 'dark';

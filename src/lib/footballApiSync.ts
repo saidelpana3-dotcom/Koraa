@@ -1,9 +1,9 @@
 import { Match, Language, MatchStatus } from '../types';
 import { playNotificationChime, sendMatchLiveNotification } from './notifications';
-import { generateFinishedMatchStats } from './matchStatsGenerator';
 
-export interface SyncedMatchResult {
+export interface FootballApiLiveMatchResult {
   id: string;
+  fixtureId?: number;
   homeScore: number;
   awayScore: number;
   status: 'LIVE' | 'FINISHED' | 'UPCOMING' | 'HALF_TIME' | string;
@@ -11,33 +11,43 @@ export interface SyncedMatchResult {
   isFinished?: boolean;
   goalDetected?: boolean;
   scoringTeam?: 'HOME' | 'AWAY' | null;
-  scorerName?: string | null;
   matchNote?: string;
+  source?: string;
 }
 
-export interface GoogleSyncResponse {
-  syncedMatches: SyncedMatchResult[];
+export interface FootballApiSyncResponse {
+  success: boolean;
+  syncedMatches: FootballApiLiveMatchResult[];
+  matchedCount?: number;
   source: string;
   timestamp?: string;
 }
 
-// Function to call Express server endpoint which uses Gemini + Google Search Grounding to fetch live Google scores
-export async function fetchGoogleLiveScores(matches: Match[], language: Language): Promise<GoogleSyncResponse> {
+/**
+ * Fetch real-time live matches from API-Football via our secure backend proxy
+ */
+export async function fetchApiFootballLiveMatches(
+  matches: Match[],
+  language: Language
+): Promise<FootballApiSyncResponse> {
   try {
-    // Only send the minimal fields needed for Gemini & search grounding to keep payload ultra lightweight
-    const lightweightMatches = matches.map(m => ({
+    const lightweightMatches = matches.map((m) => ({
       id: m.id,
       homeTeam: m.homeTeam,
+      homeTeamAr: m.homeTeamAr,
       awayTeam: m.awayTeam,
+      awayTeamAr: m.awayTeamAr,
       leagueName: m.leagueName,
+      leagueNameAr: m.leagueNameAr,
       status: m.status,
       homeScore: m.homeScore,
       awayScore: m.awayScore,
       date: m.date,
       time: m.time,
+      kickoffTimeMs: m.kickoffTimeMs,
     }));
 
-    const response = await fetch('/api/matches/google-live-sync', {
+    const response = await fetch('/api/football/sync-live', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -46,34 +56,78 @@ export async function fetchGoogleLiveScores(matches: Match[], language: Language
     });
 
     if (!response.ok) {
-      throw new Error(`Google Live Sync HTTP error ${response.status}`);
+      throw new Error(`API-Football Sync HTTP Error ${response.status}`);
     }
 
-    const data: GoogleSyncResponse = await response.json();
+    const data: FootballApiSyncResponse = await response.json();
     return data;
   } catch (err) {
-    console.warn('Google Live Sync fetch failed, falling back to local state:', err);
+    console.warn('API-Football client sync fetch notice:', err);
     return {
-      syncedMatches: matches.map(m => ({
-        id: m.id,
-        homeScore: m.homeScore,
-        awayScore: m.awayScore,
-        status: m.status,
-      })),
-      source: 'local_fallback',
+      success: false,
+      syncedMatches: [],
+      source: 'fallback',
     };
   }
 }
 
-// Process synced matches, detect goals or match finish, trigger FCM alerts, and return updated match list
-export function processSyncedMatches(
+/**
+ * Fetch detailed live match statistics, lineups, and events from API-Football
+ */
+export async function fetchApiFootballMatchDetails(
+  match: Match,
+  language: Language
+): Promise<any> {
+  try {
+    const response = await fetch('/api/football/match-live-details', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        matchId: match.id,
+        homeTeam: match.homeTeam,
+        homeTeamAr: match.homeTeamAr,
+        awayTeam: match.awayTeam,
+        awayTeamAr: match.awayTeamAr,
+        leagueName: match.leagueName,
+        kickoffTimeMs: match.kickoffTimeMs,
+        status: match.status,
+        minute: match.minute,
+        homeScore: match.homeScore,
+        awayScore: match.awayScore,
+        date: match.date,
+        time: match.time,
+        language,
+      }),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json();
+    if (data.success) {
+      return data;
+    }
+    return null;
+  } catch (err) {
+    console.warn('API-Football match details fetch notice:', err);
+    return null;
+  }
+}
+
+/**
+ * Process synced matches from API-Football, trigger goal/end alarms, and return updated match objects
+ */
+export function processApiFootballSyncedMatches(
   currentMatches: Match[],
-  syncedResults: SyncedMatchResult[],
+  syncedResults: FootballApiLiveMatchResult[],
   language: Language
 ): Match[] {
   const isAr = language === 'ar';
-  const resultMap = new Map<string, SyncedMatchResult>();
-  syncedResults.forEach(r => resultMap.set(r.id, r));
+  const resultMap = new Map<string, FootballApiLiveMatchResult>();
+  syncedResults.forEach((r) => resultMap.set(r.id, r));
 
   return currentMatches.map((match) => {
     const synced = resultMap.get(match.id);
@@ -82,24 +136,19 @@ export function processSyncedMatches(
     const homeTeamName = isAr ? match.homeTeamAr || match.homeTeam : match.homeTeam;
     const awayTeamName = isAr ? match.awayTeamAr || match.awayTeam : match.awayTeam;
 
-    let updatedHomeScore = typeof synced.homeScore === 'number' ? synced.homeScore : match.homeScore;
-    let updatedAwayScore = typeof synced.awayScore === 'number' ? synced.awayScore : match.awayScore;
-    
+    const updatedHomeScore = typeof synced.homeScore === 'number' ? synced.homeScore : match.homeScore;
+    const updatedAwayScore = typeof synced.awayScore === 'number' ? synced.awayScore : match.awayScore;
+
     let updatedStatus: MatchStatus = match.status;
     if (synced.status === 'LIVE') updatedStatus = 'LIVE';
     else if (synced.status === 'FINISHED' || synced.isFinished) updatedStatus = 'FINISHED';
     else if (synced.status === 'UPCOMING') updatedStatus = 'UPCOMING';
     else if (synced.status === 'HALF_TIME' || synced.status === 'HALFTIME') updatedStatus = 'HALF_TIME';
 
-    // Status is strictly driven by Google Search live sync result
-    if (synced.minute) {
-      match = { ...match, minute: synced.minute };
-    }
-
-    // Detect Goal Event (Score increased or goal flag from Google)
     const homeGoalScored = updatedHomeScore > match.homeScore;
     const awayGoalScored = updatedAwayScore > match.awayScore;
 
+    // Detect Goal Event and dispatch sounds + push notifications
     if (homeGoalScored || awayGoalScored || synced.goalDetected) {
       const scoringTeamName = homeGoalScored
         ? homeTeamName
@@ -109,7 +158,6 @@ export function processSyncedMatches(
         ? homeTeamName
         : awayTeamName;
 
-      // Play audio chime and trigger FCM push notification
       playNotificationChime('GOAL');
       sendMatchLiveNotification({
         matchId: match.id,
@@ -121,9 +169,8 @@ export function processSyncedMatches(
       });
     }
 
-    // Detect Match End Event (Time ended in Google)
-    const justFinished = (match.status === 'LIVE' || match.status === 'UPCOMING') && (updatedStatus === 'FINISHED' || synced.isFinished);
-
+    // Detect Match Finished Event
+    const justFinished = (match.status === 'LIVE' || match.status === 'UPCOMING' || match.status === 'HALF_TIME') && (updatedStatus === 'FINISHED' || synced.isFinished);
     if (justFinished) {
       playNotificationChime('MATCH_START');
       sendMatchLiveNotification({
@@ -136,42 +183,16 @@ export function processSyncedMatches(
       });
     }
 
-    // Build updated event log if new goal occurred
-    const newEvents = [...match.events];
-    if (homeGoalScored || awayGoalScored) {
-      let minuteNum = 85;
-      if (synced.minute) {
-        const parsed = parseInt(synced.minute.replace(/\D/g, ''), 10);
-        if (!isNaN(parsed)) minuteNum = parsed;
-      }
-
-      newEvents.unshift({
-        id: `e_google_${Date.now()}`,
-        minute: minuteNum,
-        type: 'GOAL',
-        team: homeGoalScored ? 'HOME' : 'AWAY',
-        playerName: synced.scorerName || (isAr ? 'هدف' : 'Goal Scored'),
-        playerNameAr: synced.scorerName || (isAr ? 'هدف' : 'Goal Scored'),
-        detail: `Google Live Score update: ${updatedHomeScore} - ${updatedAwayScore}`,
-      });
-    }
-
-    const finalMatch: Match = {
+    return {
       ...match,
       homeScore: updatedHomeScore,
       awayScore: updatedAwayScore,
       status: updatedStatus,
-      time: updatedStatus === 'FINISHED' ? (isAr ? 'انتهت' : 'FT') : (synced.minute || match.time),
-      minute: updatedStatus === 'FINISHED' ? (isAr ? 'انتهت' : 'FT') : (synced.minute || match.minute),
-      events: newEvents,
+      time: (updatedStatus === 'FINISHED' || synced.isFinished) ? (isAr ? 'انتهت' : 'FT') : match.time,
+      minute: synced.minute || (updatedStatus === 'FINISHED' ? (isAr ? 'انتهت' : 'FT') : match.minute),
+      isFinished: updatedStatus === 'FINISHED' || synced.isFinished,
       isGoogleSynced: true,
       lastSyncedAt: new Date().toISOString(),
     };
-
-    if (updatedStatus === 'FINISHED') {
-      finalMatch.stats = generateFinishedMatchStats(finalMatch);
-    }
-
-    return finalMatch;
   });
 }
