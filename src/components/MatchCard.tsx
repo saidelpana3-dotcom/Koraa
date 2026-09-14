@@ -14,6 +14,8 @@ interface MatchCardProps {
   isSubscribed?: boolean;
   onOpenSubscribeModal?: (match: Match) => void;
   userPrediction?: { predictedHomeScore: number; predictedAwayScore: number };
+  isFreePrediction?: boolean;
+  remainingFreePredictions?: number;
 }
 
 interface CountdownParts {
@@ -56,6 +58,8 @@ export const MatchCard: React.FC<MatchCardProps> = ({
   isSubscribed = false,
   onOpenSubscribeModal,
   userPrediction,
+  isFreePrediction = false,
+  remainingFreePredictions = 0,
 }) => {
   const isAr = language === 'ar';
   const isDark = theme === 'dark';
@@ -419,17 +423,13 @@ export const MatchCard: React.FC<MatchCardProps> = ({
             >
               <span className="text-sm animate-bounce">🎯</span>
               <span className="tracking-wide">
-                {match.predictionFeeCoins ? (
-                  isAr
-                    ? `توقع الآن واربح ${match.customCoinsReward || 150} كوينز 🪙 (رسوم ${match.predictionFeeCoins} كوينز)`
-                    : `Predict & Win +${match.customCoinsReward || 150} Coins 🪙 (Fee: ${match.predictionFeeCoins})`
-                ) : match.customCoinsReward ? (
-                  isAr
-                    ? `توقع الآن واربح ${match.customCoinsReward} كوينز 🪙`
-                    : `Predict Now & Win +${match.customCoinsReward} Coins 🪙`
-                ) : (
-                  isAr ? 'توقع الآن واربح ٥٠ كوينز 🪙' : 'Predict Now & Win +50 Coins 🪙'
-                )}
+                {match.customCoinsReward && match.customCoinsReward > 0
+                  ? (isAr
+                      ? `توقع مجاناً بدون رسوم (الجائزة +${match.customCoinsReward} كوينز) 🏆`
+                      : `Free Prediction (Win +${match.customCoinsReward} Coins) 🏆`)
+                  : (isAr
+                      ? 'توقع النتيجة الآن مجاناً 🎯'
+                      : 'Predict Score Free 🎯')}
               </span>
             </button>
           )

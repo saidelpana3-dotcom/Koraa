@@ -99,10 +99,19 @@ export const LEAGUES: League[] = [
   {
     id: 'league_cup',
     name: 'League Cup',
-    nameAr: 'League Cup',
+    nameAr: 'كابيتال ون (كأس الرابطة)',
     country: 'England',
     countryAr: 'إنجلترا',
     flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿',
+    badge: '🏆',
+  },
+  {
+    id: 'afc_cl',
+    name: 'AFC Champions League Elite',
+    nameAr: 'دوري أبطال آسيا للنخبة',
+    country: 'Asia',
+    countryAr: 'آسيا',
+    flag: '🌏',
     badge: '🏆',
   },
   {

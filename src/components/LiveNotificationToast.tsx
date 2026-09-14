@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Goal, Clock, ShieldAlert, X, Sparkles, Target, Zap } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Clock, ShieldAlert, X } from 'lucide-react';
 import { Language } from '../types';
 import { LiveNotificationPayload } from '../lib/notifications';
 
@@ -11,23 +11,33 @@ interface LiveNotificationToastProps {
 export const LiveNotificationToast: React.FC<LiveNotificationToastProps> = ({ language, onOpenPredict }) => {
   const isAr = language === 'ar';
   const [toast, setToast] = useState<LiveNotificationPayload | null>(null);
+  const lastShownTagRef = useRef<{ tag: string; time: number }>({ tag: '', time: 0 });
 
   useEffect(() => {
     let dismissTimer: ReturnType<typeof setTimeout> | null = null;
 
     const handleEvent = (e: Event) => {
       const customEvent = e as CustomEvent<LiveNotificationPayload>;
-      if (customEvent.detail) {
-        // Safe asynchronous update to prevent "Cannot update a component while rendering a different component"
-        setTimeout(() => {
-          setToast(customEvent.detail);
+      const detail = customEvent.detail;
+      if (!detail) return;
 
-          if (dismissTimer) clearTimeout(dismissTimer);
-          dismissTimer = setTimeout(() => {
-            setToast(null);
-          }, 8000);
-        }, 0);
+      // Deduplicate rapid repeat notifications of same match & type within 30 seconds
+      const notifTag = `${detail.matchId || ''}_${detail.type}_${detail.title}`;
+      const now = Date.now();
+      if (lastShownTagRef.current.tag === notifTag && now - lastShownTagRef.current.time < 30000) {
+        return;
       }
+      lastShownTagRef.current = { tag: notifTag, time: now };
+
+      setTimeout(() => {
+        setToast(detail);
+
+        if (dismissTimer) clearTimeout(dismissTimer);
+        // Clean 4.5 seconds auto-dismiss
+        dismissTimer = setTimeout(() => {
+          setToast(null);
+        }, 4500);
+      }, 0);
     };
 
     window.addEventListener('kora-live-notification', handleEvent);
@@ -46,97 +56,70 @@ export const LiveNotificationToast: React.FC<LiveNotificationToastProps> = ({ la
   const awayDisplay = isAr ? toast.awayTeamAr || toast.awayTeam : toast.awayTeam;
 
   return (
-    <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-3 animate-slideDown">
-      <div className={`p-4 bg-slate-900/95 border-2 rounded-2xl shadow-2xl backdrop-blur-xl text-white transition-all ${
-        isSmartReminder
-          ? 'border-amber-400/90 shadow-amber-950/70 bg-gradient-to-b from-slate-900 via-slate-900 to-amber-950/50 ring-2 ring-amber-400/30'
-          : isNewMatch
-          ? 'border-emerald-400 shadow-emerald-950/70 bg-gradient-to-b from-slate-900 via-slate-900 to-emerald-950/50 ring-2 ring-emerald-400/30'
-          : isPreMatch
-          ? 'border-amber-500/80 shadow-amber-950/60 bg-gradient-to-b from-slate-900 via-slate-900 to-amber-950/30'
-          : 'border-emerald-500/80 shadow-emerald-950/60 bg-gradient-to-b from-slate-900 via-slate-900 to-emerald-950/30'
-      }`}>
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
+    <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 w-full max-w-sm sm:max-w-md px-3 animate-slideDown pointer-events-auto transition-all">
+      <div className="p-3 bg-slate-900/95 border border-slate-700/80 rounded-2xl shadow-xl backdrop-blur-xl text-white">
+        <div className="flex items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
             {/* Icon Avatar */}
-            <div className={`w-11 h-11 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg ${
-              isSmartReminder
-                ? 'bg-gradient-to-br from-amber-400 via-amber-500 to-emerald-600 shadow-amber-900/60 animate-bounce'
-                : isNewMatch
-                ? 'bg-gradient-to-br from-emerald-400 via-teal-500 to-amber-500 shadow-emerald-900/50 animate-pulse'
-                : isPreMatch
-                ? 'bg-gradient-to-br from-amber-500 to-emerald-600 shadow-amber-900/50 animate-pulse'
-                : toast.type === 'GOAL'
-                ? 'bg-gradient-to-br from-emerald-500 to-teal-600 shadow-emerald-900/50 animate-bounce'
-                : toast.type === 'MATCH_START'
-                ? 'bg-gradient-to-br from-blue-500 to-indigo-600'
-                : 'bg-gradient-to-br from-rose-500 to-red-600'
-            }`}>
+            <div className="w-8 h-8 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-white shrink-0 text-sm shadow-inner">
               {isSmartReminder ? (
-                <span className="text-xl">⏰</span>
+                <span>⏰</span>
               ) : isNewMatch ? (
-                <span className="text-xl">🔥</span>
+                <span>🔥</span>
               ) : isPreMatch ? (
-                <span className="text-xl">🎯</span>
+                <span>🎯</span>
               ) : toast.type === 'GOAL' ? (
-                <span className="text-xl">⚽</span>
+                <span>⚽</span>
               ) : toast.type === 'MATCH_START' ? (
-                <Clock className="w-5 h-5 text-amber-300" />
+                <Clock className="w-4 h-4 text-amber-400" />
               ) : (
-                <ShieldAlert className="w-5 h-5 text-rose-300" />
+                <ShieldAlert className="w-4 h-4 text-rose-400" />
               )}
             </div>
 
-            {/* Notification Text */}
-            <div className="space-y-1">
-              <div className="flex items-center gap-1.5 font-extrabold text-xs">
-                <span className={isSmartReminder ? 'text-amber-300 font-black' : isNewMatch ? 'text-emerald-300 font-black' : isPreMatch ? 'text-amber-400' : 'text-emerald-400'}>
+            {/* Notification Summary */}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 font-bold text-xs truncate">
+                <span className={isSmartReminder ? 'text-amber-300' : isNewMatch ? 'text-emerald-300' : 'text-slate-100'}>
                   {isAr ? toast.titleAr || toast.title : toast.title}
                 </span>
               </div>
 
-              {/* Team Matchup Banner (if teams are provided) */}
               {homeDisplay && awayDisplay && (
-                <div className="flex items-center gap-1.5 py-0.5 text-xs font-black text-slate-100">
+                <div className="flex items-center gap-1 text-[11px] font-semibold text-slate-300 truncate">
                   <span>{homeDisplay}</span>
-                  <span className="text-amber-400 text-[11px]">⚔️</span>
+                  <span className="text-amber-400 text-[9px]">×</span>
                   <span>{awayDisplay}</span>
                 </div>
               )}
-
-              <p className="text-xs text-slate-300 leading-snug">
-                {isAr ? toast.bodyAr || toast.body : toast.body}
-              </p>
             </div>
           </div>
 
-          <button
-            onClick={() => setToast(null)}
-            className="p-1.5 rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {isPreMatch && toast.matchId && (
+              <button
+                onClick={() => {
+                  if (onOpenPredict && toast.matchId) {
+                    onOpenPredict(toast.matchId);
+                  }
+                  setToast(null);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] shadow-sm active:scale-95 transition-all cursor-pointer"
+              >
+                {isAr ? 'توقع' : 'Predict'}
+              </button>
+            )}
 
-        {/* Prediction Direct Call to Action Button */}
-        {isPreMatch && (
-          <div className="mt-3 pt-2.5 border-t border-slate-800/80">
             <button
-              onClick={() => {
-                if (onOpenPredict && toast.matchId) {
-                  onOpenPredict(toast.matchId);
-                }
-                setToast(null);
-              }}
-              className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 via-emerald-600 to-teal-500 hover:from-amber-400 hover:to-emerald-400 text-white font-black text-xs sm:text-sm shadow-lg shadow-amber-950/40 ring-1 ring-amber-400/50 flex items-center justify-center gap-2 cursor-pointer active:scale-95 transition-all"
+              onClick={() => setToast(null)}
+              className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              aria-label={isAr ? 'إغلاق' : 'Close'}
             >
-              <span className="text-base">🎯</span>
-              <span>{isAr ? 'اتوقع الان' : 'Predict Now'}</span>
+              <X className="w-3.5 h-3.5" />
             </button>
           </div>
-        )}
+        </div>
       </div>
     </div>
   );
 };
-

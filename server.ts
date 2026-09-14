@@ -29,6 +29,8 @@ import {
   areTeamsMatching,
   parseApiFootballStatus,
   apiFootballDiagnostic,
+  getAllLiveFixturesUnified,
+  fetchLiveMatchEvents,
 } from "./src/server/footballApi";
 import { getOfficialTeamRoster, OFFICIAL_TEAM_ROSTERS } from "./src/data/teamRosters";
 import { getAllCuratedMatches } from "./src/data/mockMatches";
@@ -84,6 +86,312 @@ function isFirestoreQuotaError(err: any): boolean {
   return msg.includes('quota') || msg.includes('resource_exhausted') || msg.includes('resource exhausted') || msg.includes('free daily read units');
 }
 
+// ==========================================
+// 🛡️ PERSISTENT CROSS-DEVICE USER ACCOUNTS STORAGE
+// Ensures user data (coins, predictions, profile) is 100% unified across all phones/devices
+// ==========================================
+const DATA_DIR = path.join(process.cwd(), "data");
+if (!fs.existsSync(DATA_DIR)) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  } catch (_) {}
+}
+const USER_ACCOUNTS_FILE = path.join(DATA_DIR, "synced-user-accounts.json");
+
+interface SyncedUserAccount {
+  userId: string;
+  email: string;
+  displayName: string;
+  photoURL?: string;
+  points: number;
+  coins: number;
+  predictionPoints: number;
+  exactPredictions: number;
+  dailyGiftCoins?: number;
+  predictionsMap: Record<string, any>;
+  predictionsList: any[];
+  coinsHistory: any[];
+  favoriteMatches: string[];
+  updatedAt: string;
+}
+
+const syncedAccountsStore = new Map<string, SyncedUserAccount>();
+
+function loadSyncedAccountsFromDisk() {
+  try {
+    if (fs.existsSync(USER_ACCOUNTS_FILE)) {
+      const raw = fs.readFileSync(USER_ACCOUNTS_FILE, "utf-8");
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        list.forEach((acc: SyncedUserAccount) => {
+          if (acc && acc.userId) {
+            syncedAccountsStore.set(acc.userId, acc);
+            if (acc.email) {
+              syncedAccountsStore.set(acc.email.toLowerCase().trim(), acc);
+            }
+          }
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("Notice loading synced user accounts:", e);
+  }
+
+  // Pre-seed and protect Said El Bana (193 coins as verified from active session screenshot)
+  const saidEmail = "saidelpana3@gmail.com";
+  const existingSaid = syncedAccountsStore.get(saidEmail);
+  if (!existingSaid || (existingSaid.coins || 0) < 193) {
+    const saidAccount: SyncedUserAccount = {
+      userId: existingSaid?.userId || "user_said_el_bana",
+      email: saidEmail,
+      displayName: existingSaid?.displayName || "Said El Bana",
+      points: Math.max(193, existingSaid?.points || 0),
+      coins: Math.max(193, existingSaid?.coins || 0),
+      predictionPoints: Math.max(193, existingSaid?.predictionPoints || 0),
+      exactPredictions: Math.max(2, existingSaid?.exactPredictions || 0),
+      predictionsMap: existingSaid?.predictionsMap || {},
+      predictionsList: existingSaid?.predictionsList || [],
+      coinsHistory: existingSaid?.coinsHistory || [],
+      favoriteMatches: existingSaid?.favoriteMatches || [],
+      updatedAt: new Date().toISOString(),
+    };
+    syncedAccountsStore.set(saidEmail, saidAccount);
+    if (saidAccount.userId) {
+      syncedAccountsStore.set(saidAccount.userId, saidAccount);
+    }
+  }
+}
+
+function saveSyncedAccountsToDisk() {
+  try {
+    const uniqueAccounts = Array.from(new Set(syncedAccountsStore.values()));
+    fs.writeFileSync(USER_ACCOUNTS_FILE, JSON.stringify(uniqueAccounts, null, 2), "utf-8");
+  } catch (e) {
+    console.warn("Notice saving synced user accounts:", e);
+  }
+}
+
+loadSyncedAccountsFromDisk();
+
+// Endpoint to retrieve unified user account across any device or phone
+app.get("/api/user/sync-account", async (req, res) => {
+  const userId = typeof req.query.userId === 'string' ? req.query.userId.trim() : '';
+  const email = typeof req.query.email === 'string' ? req.query.email.trim().toLowerCase() : '';
+
+  if (!userId && !email) {
+    return res.status(400).json({ success: false, error: "Missing userId or email" });
+  }
+
+  let account = (userId ? syncedAccountsStore.get(userId) : null) || (email ? syncedAccountsStore.get(email) : null);
+
+  // If email is saidelpana3@gmail.com, guarantee minimum 193 coins
+  if (email === "saidelpana3@gmail.com" || account?.email === "saidelpana3@gmail.com") {
+    if (!account) {
+      account = {
+        userId: userId || "user_said_el_bana",
+        email: "saidelpana3@gmail.com",
+        displayName: "Said El Bana",
+        points: 193,
+        coins: 193,
+        predictionPoints: 193,
+        exactPredictions: 2,
+        predictionsMap: {},
+        predictionsList: [],
+        coinsHistory: [],
+        favoriteMatches: [],
+        updatedAt: new Date().toISOString(),
+      };
+      syncedAccountsStore.set("saidelpana3@gmail.com", account);
+      if (userId) syncedAccountsStore.set(userId, account);
+      saveSyncedAccountsToDisk();
+    } else if ((account.coins || 0) < 193) {
+      account.coins = 193;
+      account.points = 193;
+    }
+  }
+
+  // If not found in memory/file, attempt to read from Firestore (if available and not quota-blocked)
+  if (!account && userId && db && Date.now() >= firestoreQuotaExceededUntil) {
+    try {
+      const uSnap = await getDoc(doc(db, "users", userId));
+      if (uSnap.exists()) {
+        const uData = uSnap.data();
+        account = {
+          userId,
+          email: uData.email || email,
+          displayName: uData.displayName || "الكابتن",
+          points: Number(uData.points || uData.coins || 0),
+          coins: Number(uData.coins || uData.points || 0),
+          predictionPoints: Number(uData.predictionPoints || 0),
+          exactPredictions: Number(uData.exactPredictions || 0),
+          predictionsMap: uData.predictionsMap || {},
+          predictionsList: Array.isArray(uData.predictionsList) ? uData.predictionsList : [],
+          coinsHistory: Array.isArray(uData.coinsHistory) ? uData.coinsHistory : [],
+          favoriteMatches: Array.isArray(uData.favoriteMatches) ? uData.favoriteMatches : [],
+          updatedAt: uData.updatedAt || new Date().toISOString(),
+        };
+        syncedAccountsStore.set(userId, account);
+        if (account.email) syncedAccountsStore.set(account.email.toLowerCase().trim(), account);
+        saveSyncedAccountsToDisk();
+      }
+    } catch (err: any) {
+      if (isFirestoreQuotaError(err)) {
+        firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+      }
+    }
+  }
+
+  if (account) {
+    return res.json({ success: true, account });
+  }
+
+  // Default empty initial state
+  return res.json({
+    success: true,
+    account: {
+      userId: userId || `user_${Date.now()}`,
+      email: email || '',
+      displayName: 'الكابتن',
+      points: 0,
+      coins: 0,
+      predictionPoints: 0,
+      exactPredictions: 0,
+      predictionsMap: {},
+      predictionsList: [],
+      coinsHistory: [],
+      favoriteMatches: [],
+      updatedAt: new Date().toISOString(),
+    },
+  });
+});
+
+// Endpoint to persist and merge user account across devices (coins, predictions, favorites)
+app.post("/api/user/sync-account", async (req, res) => {
+  const {
+    userId,
+    email,
+    displayName,
+    photoURL,
+    localCoins,
+    localPredictionPoints,
+    localExactCount,
+    predictions,
+    predictionsMap,
+    coinsHistory,
+    favoriteMatches,
+  } = req.body || {};
+
+  const cleanUserId = typeof userId === 'string' ? userId.trim() : '';
+  const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+
+  if (!cleanUserId && !cleanEmail) {
+    return res.status(400).json({ success: false, error: "Missing userId or email" });
+  }
+
+  let existing = (cleanUserId ? syncedAccountsStore.get(cleanUserId) : null) || (cleanEmail ? syncedAccountsStore.get(cleanEmail) : null);
+
+  const isSaid = cleanEmail === "saidelpana3@gmail.com" || existing?.email === "saidelpana3@gmail.com";
+  const minCoins = isSaid ? 193 : 0;
+
+  const currentCoins = Math.max(
+    minCoins,
+    existing?.coins || 0,
+    existing?.points || 0,
+    typeof localCoins === 'number' ? localCoins : 0
+  );
+
+  const currentPredPoints = Math.max(
+    minCoins,
+    existing?.predictionPoints || 0,
+    typeof localPredictionPoints === 'number' ? localPredictionPoints : 0
+  );
+
+  const currentExact = Math.max(
+    existing?.exactPredictions || 0,
+    typeof localExactCount === 'number' ? localExactCount : 0
+  );
+
+  // Merge predictionsMap
+  const mergedPredsMap: Record<string, any> = {
+    ...(existing?.predictionsMap || {}),
+    ...(predictionsMap || {}),
+  };
+
+  // If predictions array was provided, merge each item into mergedPredsMap
+  if (Array.isArray(predictions)) {
+    predictions.forEach((p: any) => {
+      const mId = p.matchId || p.id;
+      if (mId) {
+        if (!mergedPredsMap[mId] || (p.updatedAt && (!mergedPredsMap[mId].updatedAt || new Date(p.updatedAt) >= new Date(mergedPredsMap[mId].updatedAt)))) {
+          mergedPredsMap[mId] = p;
+        }
+      }
+    });
+  }
+
+  // Build unified deduplicated predictionsList
+  const mergedPredsList = Object.values(mergedPredsMap);
+
+  // Merge favorites
+  const mergedFavorites = Array.from(new Set([
+    ...(existing?.favoriteMatches || []),
+    ...(Array.isArray(favoriteMatches) ? favoriteMatches : []),
+  ]));
+
+  // Merge coinsHistory
+  const existingHistory = existing?.coinsHistory || [];
+  const newHistory = Array.isArray(coinsHistory) ? coinsHistory : [];
+  const mergedHistoryMap = new Map<string, any>();
+  [...existingHistory, ...newHistory].forEach((item: any, idx: number) => {
+    const key = item.id || item.timestamp || `${item.type}_${item.coins}_${idx}`;
+    mergedHistoryMap.set(key, item);
+  });
+  const mergedHistory = Array.from(mergedHistoryMap.values());
+
+  const updatedAccount: SyncedUserAccount = {
+    userId: cleanUserId || existing?.userId || `user_${Date.now()}`,
+    email: cleanEmail || existing?.email || '',
+    displayName: displayName || existing?.displayName || 'الكابتن',
+    photoURL: photoURL || existing?.photoURL || '',
+    points: currentCoins,
+    coins: currentCoins,
+    predictionPoints: currentPredPoints,
+    exactPredictions: currentExact,
+    predictionsMap: mergedPredsMap,
+    predictionsList: mergedPredsList,
+    coinsHistory: mergedHistory,
+    favoriteMatches: mergedFavorites,
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Save to memory
+  if (cleanUserId) syncedAccountsStore.set(cleanUserId, updatedAccount);
+  if (cleanEmail) syncedAccountsStore.set(cleanEmail, updatedAccount);
+  saveSyncedAccountsToDisk();
+
+  // Try to sync to Firestore in background without blocking response
+  if (cleanUserId && db && Date.now() >= firestoreQuotaExceededUntil) {
+    setDoc(doc(db, "users", cleanUserId), {
+      displayName: updatedAccount.displayName,
+      email: updatedAccount.email,
+      points: updatedAccount.coins,
+      coins: updatedAccount.coins,
+      predictionPoints: updatedAccount.predictionPoints,
+      exactPredictions: updatedAccount.exactPredictions,
+      predictionsMap: updatedAccount.predictionsMap,
+      predictionsList: updatedAccount.predictionsList,
+      favoriteMatches: updatedAccount.favoriteMatches,
+      updatedAt: updatedAccount.updatedAt,
+    }, { merge: true }).catch((err: any) => {
+      if (isFirestoreQuotaError(err)) {
+        firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+      }
+    });
+  }
+
+  return res.json({ success: true, account: updatedAccount });
+});
+
 // Google & Ad Network Site Verification Endpoints
 app.get("/google6645977368ee1987.html", (_req, res) => {
   res.setHeader("Content-Type", "text/html");
@@ -117,6 +425,218 @@ app.get(["/service-worker.js", "/sw.js"], (req, res) => {
 // API Health
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", app: "Kora Football Hub Server Engine" });
+});
+
+// =========================================================================
+// Official VAST Video Ads Feed Parser & Endpoint
+// =========================================================================
+const OFFICIAL_VAST_FEED_URL = "https://vapid-size.com/dhm.FWzzduGLN/v/Z/GoUP/FeNm/9Yu/Z/Utl/kfPDTecj0/MATCci0/MBzcMGtfNCzcQ_x/Noz/QPz_NrwP";
+
+interface ParsedVastAd {
+  id: string;
+  adTitle: string;
+  duration: number; // in seconds
+  skipOffset: number; // in seconds
+  videoUrl: string; // primary MP4 url
+  mediaFiles: Array<{ url: string; type: string; width?: number; height?: number; bitrate?: number }>;
+  clickThroughUrl: string;
+  impressionUrl?: string;
+  startTrackingUrl?: string;
+  completeTrackingUrl?: string;
+}
+
+// Fallback high-quality ads from this exact VAST feed to guarantee 100% uptime
+const FALLBACK_VAST_ADS: ParsedVastAd[] = [
+  {
+    id: "641280",
+    adTitle: "إعلان الشريك الرسمي (فيديو 1)",
+    duration: 29,
+    skipOffset: 15,
+    videoUrl: "https://www.silent-basis.pro/301305/351376/641280_e5a15y.mp4",
+    mediaFiles: [
+      { url: "https://www.silent-basis.pro/301305/351376/641280_e5a15y.mp4", type: "video/mp4", width: 1024, height: 576 },
+      { url: "https://www.silent-basis.pro/301305/351376/641280_e5a15y480.mp4", type: "video/mp4", width: 854, height: 480 },
+      { url: "https://www.silent-basis.pro/301305/351376/641280_e5a15y360.mp4", type: "video/mp4", width: 640, height: 360 }
+    ],
+    clickThroughUrl: OFFICIAL_VAST_FEED_URL
+  },
+  {
+    id: "1161474",
+    adTitle: "إعلان الشريك الرسمي (فيديو 2)",
+    duration: 24,
+    skipOffset: 15,
+    videoUrl: "https://www.silent-basis.pro/301305/351387/1161474_f7312y.mp4",
+    mediaFiles: [
+      { url: "https://www.silent-basis.pro/301305/351387/1161474_f7312y.mp4", type: "video/mp4", width: 1024, height: 576 },
+      { url: "https://www.silent-basis.pro/301305/351387/1161474_f7312y480.mp4", type: "video/mp4", width: 854, height: 480 },
+      { url: "https://www.silent-basis.pro/301305/351387/1161474_f7312y360.mp4", type: "video/mp4", width: 640, height: 360 }
+    ],
+    clickThroughUrl: OFFICIAL_VAST_FEED_URL
+  },
+  {
+    id: "559471",
+    adTitle: "إعلان الشريك الرسمي (فيديو 3)",
+    duration: 17,
+    skipOffset: 15,
+    videoUrl: "https://www.silent-basis.pro/152327/199276/559471_5b9bay.mp4",
+    mediaFiles: [
+      { url: "https://www.silent-basis.pro/152327/199276/559471_5b9bay.mp4", type: "video/mp4", width: 854, height: 480 },
+      { url: "https://www.silent-basis.pro/152327/199276/559471_5b9bay480.mp4", type: "video/mp4", width: 640, height: 360 }
+    ],
+    clickThroughUrl: OFFICIAL_VAST_FEED_URL
+  }
+];
+
+let cachedVastAds: ParsedVastAd[] = [];
+let lastVastFetchTime = 0;
+
+function parseDurationSeconds(dStr?: string): number {
+  if (!dStr) return 15;
+  const parts = dStr.trim().split(":").map(Number);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return Number(dStr) || 15;
+}
+
+function parseVastXml(xml: string): ParsedVastAd[] {
+  const ads: ParsedVastAd[] = [];
+  const adChunks = xml.split(/<Ad\s+/i).slice(1);
+
+  for (let i = 0; i < adChunks.length; i++) {
+    const chunk = adChunks[i];
+    const idMatch = chunk.match(/id="([^"]+)"/i);
+    const id = idMatch ? idMatch[1] : `ad_${i + 1}`;
+    
+    const titleMatch = chunk.match(/<AdTitle>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/AdTitle>/i);
+    const adTitle = titleMatch ? titleMatch[1].trim() : `إعلان الشريك #${i + 1}`;
+
+    const durationMatch = chunk.match(/<Duration>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/Duration>/i);
+    const duration = parseDurationSeconds(durationMatch ? durationMatch[1] : undefined);
+
+    const skipMatch = chunk.match(/skipoffset="([^"]+)"/i);
+    const skipOffset = parseDurationSeconds(skipMatch ? skipMatch[1] : "00:00:15");
+
+    const impressionMatch = chunk.match(/<Impression>(?:<!\[CDATA\[)?\s*(https?:\/\/[^\]<\s]+)\s*(?:\]\]>)?<\/Impression>/i);
+    const impressionUrl = impressionMatch ? impressionMatch[1] : undefined;
+
+    const clickMatch = chunk.match(/<ClickThrough>(?:<!\[CDATA\[)?\s*(https?:\/\/[^\]<\s]+)\s*(?:\]\]>)?<\/ClickThrough>/i);
+    const clickThroughUrl = clickMatch ? clickMatch[1] : OFFICIAL_VAST_FEED_URL;
+
+    const startMatch = chunk.match(/<Tracking\s+event="start">(?:<!\[CDATA\[)?\s*(https?:\/\/[^\]<\s]+)\s*(?:\]\]>)?<\/Tracking>/i);
+    const startTrackingUrl = startMatch ? startMatch[1] : undefined;
+
+    const completeMatch = chunk.match(/<Tracking\s+event="complete">(?:<!\[CDATA\[)?\s*(https?:\/\/[^\]<\s]+)\s*(?:\]\]>)?<\/Tracking>/i);
+    const completeTrackingUrl = completeMatch ? completeMatch[1] : undefined;
+
+    // Media files extraction
+    const mediaFiles: Array<{ url: string; type: string; width?: number; height?: number; bitrate?: number }> = [];
+    const mediaRegex = /<MediaFile([^>]*)>(?:<!\[CDATA\[)?\s*(https?:\/\/[^\]<\s]+)\s*(?:\]\]>)?<\/MediaFile>/gi;
+    let match;
+    while ((match = mediaRegex.exec(chunk)) !== null) {
+      const attrs = match[1];
+      const mediaUrl = match[2];
+      const typeMatch = attrs.match(/type="([^"]+)"/i);
+      const widthMatch = attrs.match(/width="(\d+)"/i);
+      const heightMatch = attrs.match(/height="(\d+)"/i);
+      const bitrateMatch = attrs.match(/bitrate="(\d+)"/i);
+
+      mediaFiles.push({
+        url: mediaUrl,
+        type: typeMatch ? typeMatch[1] : "video/mp4",
+        width: widthMatch ? Number(widthMatch[1]) : undefined,
+        height: heightMatch ? Number(heightMatch[1]) : undefined,
+        bitrate: bitrateMatch ? Number(bitrateMatch[1]) : undefined,
+      });
+    }
+
+    // Find the best MP4 file (prefer mp4 over webm, prefer highest width/bitrate)
+    const mp4Files = mediaFiles.filter(m => m.type.includes("mp4"));
+    const sortedMedia = (mp4Files.length > 0 ? mp4Files : mediaFiles).sort((a, b) => {
+      const wA = a.width || 0;
+      const wB = b.width || 0;
+      return wB - wA;
+    });
+
+    const primaryVideoUrl = sortedMedia[0]?.url;
+
+    if (primaryVideoUrl) {
+      ads.push({
+        id,
+        adTitle,
+        duration: Math.max(15, duration),
+        skipOffset: Math.min(15, skipOffset || 15),
+        videoUrl: primaryVideoUrl,
+        mediaFiles,
+        clickThroughUrl,
+        impressionUrl,
+        startTrackingUrl,
+        completeTrackingUrl,
+      });
+    }
+  }
+
+  return ads;
+}
+
+app.get("/api/ads/vast", async (req, res) => {
+  try {
+    const now = Date.now();
+    // Cache for 60 seconds
+    if (cachedVastAds.length > 0 && now - lastVastFetchTime < 60000) {
+      return res.json({ success: true, source: "cache", ads: cachedVastAds });
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+
+    const response = await fetch(OFFICIAL_VAST_FEED_URL, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "Accept": "application/xml, text/xml, */*"
+      }
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      throw new Error(`VAST server responded with status: ${response.status}`);
+    }
+
+    const xml = await response.text();
+    const parsed = parseVastXml(xml);
+
+    if (parsed.length > 0) {
+      // Merge with fallbacks to ensure at least 3 distinct ads are always available
+      const mergedAds = [...parsed];
+      for (const fallback of FALLBACK_VAST_ADS) {
+        if (mergedAds.length >= 3) break;
+        if (!mergedAds.some(a => a.id === fallback.id || a.videoUrl === fallback.videoUrl)) {
+          mergedAds.push(fallback);
+        }
+      }
+      cachedVastAds = mergedAds;
+      lastVastFetchTime = now;
+      return res.json({ success: true, source: "live", ads: mergedAds });
+    }
+
+    return res.json({ success: true, source: "fallback", ads: FALLBACK_VAST_ADS });
+  } catch (error: any) {
+    console.error("Error fetching VAST XML feed:", error?.message || error);
+    return res.json({ success: true, source: "fallback", ads: FALLBACK_VAST_ADS });
+  }
+});
+
+// Proxy ping tracking pixel without CORS/adblock issues
+app.get("/api/ads/track", async (req, res) => {
+  const url = req.query.url as string;
+  if (url && (url.startsWith("http://") || url.startsWith("https://"))) {
+    try {
+      fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (Linux; Android 10; Mobile)" }
+      }).catch(() => {});
+    } catch (_) {}
+  }
+  res.json({ status: "tracked" });
 });
 
 // =========================================================================
@@ -177,9 +697,14 @@ async function evaluateFinishedMatchesOnServer(
         let coinsAwarded = 0;
         let newStatus = "MISSED";
 
+        const matchCatalog = MASTER_FINISHED_MATCHES_MAP[match.id];
+        const matchReward = typeof matchCatalog?.customReward === 'number'
+          ? matchCatalog.customReward
+          : (typeof (match as any).customCoinsReward === 'number' ? (match as any).customCoinsReward : 0);
+
         if (isExactMatch) {
-          pointsAwarded = 50;
-          coinsAwarded = 50;
+          pointsAwarded = matchReward > 0 ? matchReward : 10;
+          coinsAwarded = matchReward;
           newStatus = "EXACT_SCORE";
         } else {
           pointsAwarded = 0;
@@ -220,7 +745,9 @@ async function evaluateFinishedMatchesOnServer(
                   ? (ph === mCatalog.homeScore && pa === mCatalog.awayScore)
                   : (predData.status === "EXACT_SCORE" || (typeof predData.coinsEarned === "number" && predData.coinsEarned >= 50));
                 if (isExact) {
-                  const rew = mCatalog?.customReward || (typeof predData.coinsEarned === "number" && predData.coinsEarned > 0 ? predData.coinsEarned : 50);
+                  const rew = typeof mCatalog?.customReward === 'number'
+                    ? mCatalog.customReward
+                    : (typeof predData.coinsEarned === "number" ? predData.coinsEarned : 0);
                   totalCoinsFromPredictions += rew;
                   totalExactWins += 1;
                 }
@@ -254,13 +781,13 @@ async function evaluateFinishedMatchesOnServer(
             // Send notification if coins were newly awarded
             if (pointsAwarded > 0) {
               const msgBody = isExactMatch
-                ? `تهانينا! أصاب توقعك النتيجة الدقيقة لمباراة (${p.matchHomeTeamAr || p.matchHomeTeam || 'المباراة'}) بنتيجة ${actualHome}-${actualAway}! تم إضافة 50 كوينز لمحفظتك بنجاح! 🪙🎉`
+                ? `تهانينا! أصاب توقعك النتيجة الدقيقة لمباراة (${p.matchHomeTeamAr || p.matchHomeTeam || 'المباراة'}) بنتيجة ${actualHome}-${actualAway}! تم إضافة ${matchReward} كوينز لمحفظتك بنجاح! 🪙🎉`
                 : `تهانينا! أصاب توقعك الصحيح للمباراة! تم إضافة الكوينز لحسابك! 👏`;
 
               await addDoc(collection(db, "notifications"), {
                 userId: p.userId,
-                title: isExactMatch ? "توقع ممتاز بالنتيجة! 🎯 (+50 كوينز 🪙)" : "توقع صحيح! ⚽",
-                titleAr: isExactMatch ? "توقع ممتاز بالنتيجة! 🎯 (+50 كوينز 🪙)" : "توقع صحيح! ⚽",
+                title: isExactMatch ? `توقع ممتاز بالنتيجة! 🎯 (+${matchReward} كوينز 🪙)` : "توقع صحيح! ⚽",
+                titleAr: isExactMatch ? `توقع ممتاز بالنتيجة! 🎯 (+${matchReward} كوينز 🪙)` : "توقع صحيح! ⚽",
                 body: msgBody,
                 bodyAr: msgBody,
                 type: "GOAL",
@@ -286,8 +813,8 @@ async function evaluateFinishedMatchesOnServer(
       evaluatedMatchesMemoryCache.add(evalCacheKey);
     } catch (err: any) {
       if (isFirestoreQuotaError(err)) {
-        firestoreQuotaExceededUntil = Date.now() + 300000; // 5 minute cooldown
-        console.warn("Firestore daily free quota limit reached during match evaluation. Cooling down for 5 minutes.");
+        firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000; // 1 hour cooldown
+        console.warn("Firestore daily free quota limit reached during match evaluation. Cooling down gracefully.");
         break;
       } else {
         console.warn(`Evaluation notice for match ${match.id}:`, err?.message || err);
@@ -299,20 +826,17 @@ async function evaluateFinishedMatchesOnServer(
 }
 
 const ALL_UNPLAYED_MATCH_IDS = [
-  'm_egy_mokawloon_ahly_sep9',
   'm_laliga_realmadrid_rayo_sep12',
   'm_egy_ahly_abuqir_sep15',
-  'm_ucl_realmadrid_inter_sep8',
-  'm_ucl_realmadrid_inter',
-  'm_ucl_inter_realmadrid',
 ];
 
 // Revert all unplayed matches function
 async function revertAllUnplayedMatchesInternal() {
   let totalRevertedPredictions = 0;
-  if (!db) return totalRevertedPredictions;
+  if (!db || Date.now() < firestoreQuotaExceededUntil) return totalRevertedPredictions;
 
   for (const mIdStr of ALL_UNPLAYED_MATCH_IDS) {
+    if (Date.now() < firestoreQuotaExceededUntil) break;
     try {
       await setDoc(doc(db, "matches", mIdStr), {
         id: mIdStr,
@@ -325,7 +849,12 @@ async function revertAllUnplayedMatchesInternal() {
         pointsDistributed: false,
         updatedAt: new Date().toISOString(),
       }, { merge: false });
-    } catch (_) {}
+    } catch (err: any) {
+      if (isFirestoreQuotaError(err)) {
+        firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+        break;
+      }
+    }
 
     evaluatedMatchesMemoryCache.forEach((key) => {
       if (key.includes(mIdStr)) {
@@ -370,13 +899,225 @@ async function revertAllUnplayedMatchesInternal() {
                 correctPredictionsCount: newExacts,
               });
             }
-          } catch (_) {}
+          } catch (err: any) {
+            if (isFirestoreQuotaError(err)) {
+              firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+              break;
+            }
+          }
         }
       }
-    } catch (_) {}
+    } catch (err: any) {
+      if (isFirestoreQuotaError(err)) {
+        firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+        break;
+      }
+    }
   }
   return totalRevertedPredictions;
 }
+
+/**
+ * Strict Audit and Coin Correction Engine
+ * - Al Mokawloon 1 - 1 Al Ahly: Exact score 1-1 awards 50 coins. Any other prediction receives 0 coins.
+ * - Real Madrid 2 - 1 Inter: Exact score 2-1 awards 150 coins. Any other prediction receives 0 coins.
+ * - Checks all predictions for these matches: if any user was awarded coins for any result other than
+ *   the exact official score, those coins are revoked and user profile is corrected.
+ */
+async function auditAndCleanMatchPredictionsAndCoinsInternal(): Promise<{
+  success: boolean;
+  auditedPredictions: number;
+  fixedPredictions: number;
+  usersUpdated: number;
+}> {
+  if (!db || Date.now() < firestoreQuotaExceededUntil) {
+    return { success: false, auditedPredictions: 0, fixedPredictions: 0, usersUpdated: 0 };
+  }
+
+  let auditedPredictions = 0;
+  let fixedPredictions = 0;
+  const affectedUserIds = new Set<string>();
+
+  const AUDITED_TARGETS = [
+    {
+      matchIds: ['m_ucl_realmadrid_inter_sep8', 'm_ucl_realmadrid_inter', 'm_ucl_inter_realmadrid'],
+      officialHomeScore: 2,
+      officialAwayScore: 1,
+      exactCoinsReward: 150,
+      isReversed: (mId: string) => mId.includes('inter_realmadrid'),
+    },
+    {
+      matchIds: ['m_egy_mokawloon_ahly_sep9', 'm_egy_mokawloon_ahly', 'm_egy_ahly_mokawloon', 'm_egy_ahly_mokawloon_sep9'],
+      officialHomeScore: 1,
+      officialAwayScore: 1,
+      exactCoinsReward: 50,
+      isReversed: (_mId: string) => false,
+    },
+    {
+      matchIds: ['m_epl_manutd_mancity_sep13', 'm_epl_manutd_mancity', 'm_epl_mancity_manutd_sep13', 'm_epl_mancity_manutd'],
+      officialHomeScore: 0,
+      officialAwayScore: 1,
+      exactCoinsReward: 50,
+      isReversed: (mId: string) => mId.includes('mancity_manutd'),
+    },
+  ];
+
+  for (const target of AUDITED_TARGETS) {
+    if (Date.now() < firestoreQuotaExceededUntil) break;
+    for (const mId of target.matchIds) {
+      if (Date.now() < firestoreQuotaExceededUntil) break;
+      try {
+        const q = query(collection(db, "predictions"), where("matchId", "==", mId));
+        const snap = await getDocs(q);
+
+        for (const docSnap of snap.docs) {
+          auditedPredictions++;
+          const p = docSnap.data();
+          const userId = p.userId;
+          if (userId) affectedUserIds.add(userId);
+
+          const predHome = Number(p.predictedHomeScore);
+          const predAway = Number(p.predictedAwayScore);
+          const reversed = target.isReversed(mId);
+
+          const isExact = reversed
+            ? (predHome === target.officialAwayScore && predAway === target.officialHomeScore)
+            : (predHome === target.officialHomeScore && predAway === target.officialAwayScore);
+
+          const expectedStatus = isExact ? 'EXACT_SCORE' : 'MISSED';
+          const expectedCoins = isExact ? target.exactCoinsReward : 0;
+          const expectedPoints = isExact ? target.exactCoinsReward : 0;
+
+          const needsFix = (p.status !== expectedStatus) ||
+            (p.coinsEarned !== expectedCoins) ||
+            (p.pointsEarned !== expectedPoints) ||
+            !p.evaluated;
+
+          if (needsFix) {
+            fixedPredictions++;
+            await updateDoc(doc(db, "predictions", docSnap.id), {
+              status: expectedStatus,
+              coinsEarned: expectedCoins,
+              pointsEarned: expectedPoints,
+              matchHomeScore: reversed ? target.officialAwayScore : target.officialHomeScore,
+              matchAwayScore: reversed ? target.officialHomeScore : target.officialAwayScore,
+              evaluated: true,
+              evaluatedAt: new Date().toISOString(),
+              auditedAt: new Date().toISOString(),
+            });
+          }
+        }
+      } catch (err: any) {
+        if (isFirestoreQuotaError(err)) {
+          firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+          console.warn(`Firestore quota reached while auditing match ${mId}. Suspending background audit gracefully.`);
+          return { success: false, auditedPredictions, fixedPredictions, usersUpdated: 0 };
+        }
+        console.warn(`Error auditing match ${mId}:`, err);
+      }
+    }
+  }
+
+  // Recalculate user coin balances for all affected users
+  let usersUpdated = 0;
+  for (const uid of affectedUserIds) {
+    if (Date.now() < firestoreQuotaExceededUntil) break;
+    try {
+      const uRef = doc(db, "users", uid);
+      const uSnap = await getDoc(uRef);
+      if (!uSnap.exists()) continue;
+
+      const userPredsSnap = await getDocs(query(collection(db, "predictions"), where("userId", "==", uid)));
+      let totalEarnedCoins = 0;
+      let totalSpentCoins = 0;
+      let exactCount = 0;
+
+      const userMatchPreds = new Map<string, any>();
+      for (const pSnap of userPredsSnap.docs) {
+        const pData = { id: pSnap.id, ...pSnap.data() } as any;
+        const matchKey = pData.matchId;
+        if (!matchKey) continue;
+
+        let canonicalKey = matchKey;
+        if (matchKey.includes('realmadrid_inter') || matchKey.includes('inter_realmadrid')) {
+          canonicalKey = 'm_ucl_realmadrid_inter';
+        } else if (matchKey.includes('mokawloon_ahly') || matchKey.includes('ahly_mokawloon')) {
+          canonicalKey = 'm_egy_mokawloon_ahly';
+        }
+
+        if (!userMatchPreds.has(canonicalKey)) {
+          userMatchPreds.set(canonicalKey, pData);
+        } else {
+          const existing = userMatchPreds.get(canonicalKey);
+          if (!existing.createdAt || !pData.createdAt || new Date(pData.createdAt) >= new Date(existing.createdAt)) {
+            userMatchPreds.set(canonicalKey, pData);
+          }
+        }
+      }
+
+      for (const p of userMatchPreds.values()) {
+        const mKey = p.matchId;
+        const fee = typeof p.coinsSpent === 'number' ? p.coinsSpent : 0;
+        totalSpentCoins += fee;
+
+        const ph = Number(p.predictedHomeScore);
+        const pa = Number(p.predictedAwayScore);
+
+        if (mKey.includes('realmadrid_inter') || mKey.includes('inter_realmadrid')) {
+          const isExactRM = mKey.includes('inter_realmadrid') ? (ph === 1 && pa === 2) : (ph === 2 && pa === 1);
+          if (isExactRM) {
+            totalEarnedCoins += 150;
+            exactCount++;
+          }
+        } else if (mKey.includes('mokawloon_ahly') || mKey.includes('ahly_mokawloon')) {
+          const isExactAhly = (ph === 1 && pa === 1);
+          if (isExactAhly) {
+            totalEarnedCoins += 50;
+            exactCount++;
+          }
+        } else if (p.status === 'EXACT_SCORE' && typeof p.coinsEarned === 'number' && p.coinsEarned > 0) {
+          totalEarnedCoins += p.coinsEarned;
+          exactCount++;
+        }
+      }
+
+      const netCoins = Math.max(0, totalEarnedCoins - totalSpentCoins);
+
+      await updateDoc(uRef, {
+        coins: netCoins,
+        points: netCoins,
+        predictionPoints: totalEarnedCoins,
+        exactPredictions: exactCount,
+        correctPredictionsCount: exactCount,
+        lastAuditedAt: new Date().toISOString(),
+      });
+
+      usersUpdated++;
+    } catch (err: any) {
+      if (isFirestoreQuotaError(err)) {
+        firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+        break;
+      }
+      console.warn(`Error updating user ${uid} after audit:`, err);
+    }
+  }
+
+  return { success: true, auditedPredictions, fixedPredictions, usersUpdated };
+}
+
+// Endpoint to execute audit and correction of coin distribution
+app.all(["/api/admin/audit-and-clean-predictions", "/api/matches/audit-and-clean-predictions"], async (_req, res) => {
+  try {
+    const result = await auditAndCleanMatchPredictionsAndCoinsInternal();
+    return res.json({
+      success: true,
+      message: "تم فحص جميع التوقعات وتصحيح توزيع الكوينز وسحب أي نقاط غير مستحقة بنجاح!",
+      ...result,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
 
 // Endpoint to revert all unplayed matches back to UPCOMING and restore coins
 app.all(["/api/matches/revert-all-unplayed", "/api/admin/revert-all-unplayed"], async (_req, res) => {
@@ -630,6 +1371,11 @@ const MASTER_FINISHED_MATCHES_MAP: Record<string, { homeScore: number; awayScore
   m_epl_liverpool_ipswich_sep4: { homeScore: 2, awayScore: 0, customReward: 50 },
   m_epl_ipswich_liverpool: { homeScore: 0, awayScore: 2, customReward: 50 },
   m_epl_liverpool_ipswich: { homeScore: 2, awayScore: 0, customReward: 50 },
+  // Premier League: Manchester United 0 - 1 Manchester City (50 coins reward)
+  m_epl_manutd_mancity_sep13: { homeScore: 0, awayScore: 1, customReward: 50 },
+  m_epl_manutd_mancity: { homeScore: 0, awayScore: 1, customReward: 50 },
+  m_epl_mancity_manutd_sep13: { homeScore: 1, awayScore: 0, customReward: 50 },
+  m_epl_mancity_manutd: { homeScore: 1, awayScore: 0, customReward: 50 },
   // Egyptian League & Cup
   m_egy_cup_enppi_degla: { homeScore: 1, awayScore: 3, customReward: 50 },
   m_egy_cup_degla_enppi: { homeScore: 3, awayScore: 1, customReward: 50 },
@@ -726,6 +1472,15 @@ const MASTER_FINISHED_MATCHES_MAP: Record<string, { homeScore: number; awayScore
   m_afcon_egypt_senegal: { homeScore: 1, awayScore: 0, customReward: 50 },
   m_superlig_trabzonspor_genclerbirligi_sep6: { homeScore: 2, awayScore: 0, customReward: 50 },
   m_superlig_trabzonspor_genclerbirligi: { homeScore: 2, awayScore: 0, customReward: 50 },
+  // UEFA Champions League: Real Madrid 2 - 1 Inter Milan (150 coins reward)
+  m_ucl_realmadrid_inter_sep8: { homeScore: 2, awayScore: 1, customReward: 150 },
+  m_ucl_realmadrid_inter: { homeScore: 2, awayScore: 1, customReward: 150 },
+  m_ucl_inter_realmadrid: { homeScore: 1, awayScore: 2, customReward: 150 },
+  // Egyptian Premier League: Al Mokawloon 1 - 1 Al Ahly (50 coins reward)
+  m_egy_mokawloon_ahly_sep9: { homeScore: 1, awayScore: 1, customReward: 50 },
+  m_egy_mokawloon_ahly: { homeScore: 1, awayScore: 1, customReward: 50 },
+  m_egy_ahly_mokawloon_sep9: { homeScore: 1, awayScore: 1, customReward: 50 },
+  m_egy_ahly_mokawloon: { homeScore: 1, awayScore: 1, customReward: 50 },
 };
 
 // Endpoint to restore and sync user coins directly from their predictions in Firestore
@@ -800,7 +1555,9 @@ app.post("/api/user/sync-coins", async (req, res) => {
       const isExactByStatus = !targetMatch && (p.status === "EXACT_SCORE" || (typeof p.coinsEarned === "number" && p.coinsEarned >= 50));
 
       if (isExactByScore || isExactByStatus) {
-        const reward = targetMatch?.customReward || (typeof p.coinsEarned === "number" && p.coinsEarned > 0 ? p.coinsEarned : 50);
+        const reward = typeof targetMatch?.customReward === 'number'
+          ? targetMatch.customReward
+          : (typeof p.coinsEarned === "number" ? p.coinsEarned : 0);
         totalEarnedCoins += reward;
         exactCount++;
 
@@ -1079,7 +1836,7 @@ app.all("/api/admin/recalculate-standings", async (req, res) => {
     });
   } catch (err: any) {
     if (isFirestoreQuotaError(err)) {
-      firestoreQuotaExceededUntil = Date.now() + 300000;
+      firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
       return res.json({
         success: true,
         message: "تم استرجاع الترتيب (الحصة اليومية لفايربيس استنفدت، جاري العمل من الذاكرة)",
@@ -1098,6 +1855,18 @@ app.get("/api/predictions/match-stats", async (req, res) => {
 
   if (!db) {
     return res.status(500).json({ success: false, error: "Database not initialized" });
+  }
+
+  if (Date.now() < firestoreQuotaExceededUntil) {
+    return res.json({
+      matchId,
+      actualScore: `${actualHome} - ${actualAway}`,
+      totalPredictions: 0,
+      correctPredictionsCount: 0,
+      missedPredictionsCount: 0,
+      details: [],
+      quotaNotice: true,
+    });
   }
 
   try {
@@ -1139,6 +1908,18 @@ app.get("/api/predictions/match-stats", async (req, res) => {
       details,
     });
   } catch (err: any) {
+    if (isFirestoreQuotaError(err)) {
+      firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+      return res.json({
+        matchId,
+        actualScore: `${actualHome} - ${actualAway}`,
+        totalPredictions: 0,
+        correctPredictionsCount: 0,
+        missedPredictionsCount: 0,
+        details: [],
+        quotaNotice: true,
+      });
+    }
     return res.status(500).json({ success: false, error: err?.message });
   }
 });
@@ -1250,12 +2031,7 @@ app.post("/api/football/sync-live", async (req, res) => {
 
   try {
     const todayStr = new Date().toISOString().split('T')[0];
-    const [liveFixtures, todayFixtures] = await Promise.all([
-      getLiveFixtures().catch(() => []),
-      getFixturesByDate(todayStr).catch(() => []),
-    ]);
-
-    const allFixtures = [...(liveFixtures || []), ...(todayFixtures || [])];
+    const allFixtures = await getAllLiveFixturesUnified(todayStr).catch(() => []);
 
     for (const match of matches) {
       const homeName = match.homeTeam || '';
@@ -1278,6 +2054,8 @@ app.post("/api/football/sync-live", async (req, res) => {
           isFinished: true,
           goalDetected: false,
           scoringTeam: null,
+          events: match.events || [],
+          stats: match.stats || null,
           matchNote: isArabic ? 'نتيجة رسمية مؤكدة' : 'Official Confirmed Result',
           source: 'master_catalog',
         });
@@ -1293,7 +2071,7 @@ app.post("/api/football/sync-live", async (req, res) => {
         continue;
       }
 
-      // Find matching fixture in API-Football
+      // Find matching fixture in unified live feed
       const matchedFixture = allFixtures.find((f: any) => {
         const fHome = f.teams?.home?.name || '';
         const fAway = f.teams?.away?.name || '';
@@ -1314,6 +2092,17 @@ app.post("/api/football/sync-live", async (req, res) => {
           liveElapsed
         );
 
+        // Fetch live events and run confirmatory step if match ended
+        let matchEvents = Array.isArray(matchedFixture.events) ? matchedFixture.events : [];
+        if ((statusInfo.isFinished || (liveElapsed && liveElapsed >= 90)) && matchEvents.length === 0) {
+          try {
+            const confirmedEvents = await fetchLiveMatchEvents(homeName, awayName);
+            if (Array.isArray(confirmedEvents) && confirmedEvents.length > 0) {
+              matchEvents = confirmedEvents;
+            }
+          } catch (_) {}
+        }
+
         const goalDetected = (fixtureHomeScore > (match.homeScore || 0)) || (fixtureAwayScore > (match.awayScore || 0));
         let scoringTeam: 'HOME' | 'AWAY' | null = null;
         if (fixtureHomeScore > (match.homeScore || 0)) scoringTeam = 'HOME';
@@ -1329,10 +2118,12 @@ app.post("/api/football/sync-live", async (req, res) => {
           isFinished: statusInfo.isFinished,
           goalDetected,
           scoringTeam,
+          events: matchEvents.length > 0 ? matchEvents : (match.events || []),
+          stats: matchedFixture.stats || match.stats || null,
           matchNote: isArabic 
-            ? `مُحدّث مباشرة من API-Football (الوقت الفعلي: ${statusInfo.minuteDisplay || 'مباشر'})` 
-            : `Live real-time sync via API-Football (${statusInfo.minuteDisplay || 'LIVE'})`,
-          source: "api_football_live",
+            ? `مُحدّث مباشرة (الوقت الفعلي: ${statusInfo.minuteDisplay || 'مباشر'})` 
+            : `Live real-time sync (${statusInfo.minuteDisplay || 'LIVE'})`,
+          source: matchedFixture.source || "live_stream",
         });
 
         if (statusInfo.isFinished && match.status !== 'FINISHED') {
@@ -1398,6 +2189,8 @@ app.post("/api/football/sync-live", async (req, res) => {
           goalDetected: isGoalDetected,
           scoringTeam,
           lastGoal: computed.lastGoal,
+          events: (Array.isArray(computed.events) && computed.events.length > 0) ? computed.events : (match.events || []),
+          stats: computed.stats || match.stats || null,
           matchNote: isGoalDetected && computed.lastGoal
             ? (isArabic ? `⚽ هدف! ${computed.lastGoal.playerAr} (${computed.lastGoal.minute}')` : `⚽ Goal! ${computed.lastGoal.player} (${computed.lastGoal.minute}')`)
             : computed.status === 'LIVE' 
@@ -1566,7 +2359,13 @@ app.post("/api/football/match-live-details", async (req, res) => {
 
   const finalStatus = curated?.status === 'FINISHED' ? 'FINISHED' : (status === 'FINISHED' ? 'FINISHED' : computedSim.status);
   const finalMinute = finalStatus === 'FINISHED' ? 'انتهت' : computedSim.minute;
-  const finalEvents = (curated?.events && curated.events.length > 0) ? curated.events : computedSim.events;
+  const isMatchFinished = finalStatus === 'FINISHED';
+  const allCandidateEvents = (curated?.events && curated.events.length > 0) ? curated.events : computedSim.events;
+  const finalEvents = isMatchFinished 
+    ? allCandidateEvents 
+    : finalStatus === 'UPCOMING'
+    ? []
+    : allCandidateEvents.filter((e: any) => (e.minute || 0) <= (computedSim.playedMinute || 1));
   const finalHomeScore = finalStatus === 'FINISHED' 
     ? (curated?.homeScore ?? (typeof homeScore === 'number' && homeScore > 0 ? homeScore : computedSim.homeScore)) 
     : computedSim.homeScore;
@@ -2045,6 +2844,7 @@ setInterval(() => {
 // ⚡ Background Scheduled Checker: Automatically evaluate finished matches and award 50 coins to correct exact predictions
 setInterval(() => {
   try {
+    if (Date.now() < firestoreQuotaExceededUntil) return;
     const finishedMatchesArray = Object.entries(MASTER_FINISHED_MATCHES_MAP).map(([id, data]) => ({
       id,
       homeScore: data.homeScore,
@@ -2052,7 +2852,7 @@ setInterval(() => {
     }));
     evaluateFinishedMatchesOnServer(finishedMatchesArray, false).catch(() => {});
   } catch (_) {}
-}, 45000); // Check every 45 seconds
+}, 5 * 60 * 1000); // Check every 5 minutes and respect cooldown
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
@@ -2074,15 +2874,25 @@ async function startServer() {
     // Run initial evaluation of finished matches to ensure points and coins are distributed
     setTimeout(async () => {
       try {
+        if (Date.now() < firestoreQuotaExceededUntil) {
+          console.log("Firestore quota cooling down; skipping initial background audit.");
+          return;
+        }
         await revertAllUnplayedMatchesInternal();
+        await auditAndCleanMatchPredictionsAndCoinsInternal();
         const finishedMatchesArray = Object.entries(MASTER_FINISHED_MATCHES_MAP).map(([id, data]) => ({
           id,
           homeScore: data.homeScore,
           awayScore: data.awayScore,
         }));
         await evaluateFinishedMatchesOnServer(finishedMatchesArray, true);
-      } catch (e) {
-        console.warn("Initial finished matches evaluation notice:", e);
+      } catch (e: any) {
+        if (isFirestoreQuotaError(e)) {
+          firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+          console.warn("Firestore daily quota limit reached during startup evaluation. Cooling down gracefully.");
+        } else {
+          console.warn("Initial finished matches evaluation notice:", e?.message || e);
+        }
       }
     }, 2000);
   });

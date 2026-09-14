@@ -8,7 +8,8 @@ import {
   getGlobalSmartReminderInterval,
   setGlobalSmartReminderInterval,
   isGlobalSmartReminderEnabled,
-  setGlobalSmartReminderEnabled
+  setGlobalSmartReminderEnabled,
+  clearAllNotificationLogs
 } from '../lib/notifications';
 import { db, doc, deleteDoc } from '../lib/firebase';
 
@@ -40,7 +41,9 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
   onOpenMatchDetails,
 }) => {
   const isAr = language === 'ar';
-  const [activeTab, setActiveTab] = useState<'subs' | 'history' | 'settings'>('subs');
+  const [activeTab, setActiveTab] = useState<'subs' | 'history' | 'settings'>(
+    subscriptions.length === 0 && notificationsLog.length > 0 ? 'history' : 'subs'
+  );
   const [permissionStatus, setPermissionStatus] = useState<string>(
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
   );
@@ -316,7 +319,21 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                   </p>
                 </div>
               ) : (
-                notificationsLog.map((log) => {
+                <>
+                  <div className="flex items-center justify-between px-1 pb-1">
+                    <span className="text-[11px] font-bold text-slate-400">
+                      {isAr ? `إجمالي التنبيهات (${notificationsLog.length})` : `Total alerts (${notificationsLog.length})`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => clearAllNotificationLogs(notificationsLog)}
+                      className="text-[11px] text-rose-400 hover:text-rose-300 transition-colors flex items-center gap-1 cursor-pointer font-semibold"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>{isAr ? 'مسح الكل' : 'Clear all'}</span>
+                    </button>
+                  </div>
+                  {notificationsLog.map((log) => {
                   const isSmartReminder = log.type === 'SMART_REMINDER';
                   const isPredType = isSmartReminder || log.type === 'PRE_MATCH_DAY_BEFORE' || log.type === 'MATCH_DAY_MORNING' || log.type === 'PRE_MATCH_COUNTDOWN';
                   const homeTxt = isAr ? log.homeTeamAr || log.homeTeam : log.homeTeam;
@@ -372,7 +389,8 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                       )}
                     </div>
                   );
-                })
+                })}
+              </>
               )}
             </div>
           )}

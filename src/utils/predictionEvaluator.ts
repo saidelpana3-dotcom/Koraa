@@ -81,10 +81,6 @@ export const FINISHED_MATCHES_CATALOG: Record<string, {
   'm_epl_liverpool_ipswich': { homeScore: 2, awayScore: 0, homeTeamAr: 'ليفربول', awayTeamAr: 'إيبسويتش تاون', homeTeam: 'Liverpool FC', awayTeam: 'Ipswich Town', customCoinsReward: 50 },
 
   // La Liga
-  'm_laliga_betis_realmadrid_sep4': { homeScore: 1, awayScore: 2, homeTeamAr: 'ريال بيتيس', awayTeamAr: 'ريال مدريد', homeTeam: 'Real Betis', awayTeam: 'Real Madrid', customCoinsReward: 50 },
-  'm_laliga_realmadrid_betis_sep4': { homeScore: 2, awayScore: 1, homeTeamAr: 'ريال مدريد', awayTeamAr: 'ريال بيتيس', homeTeam: 'Real Madrid', awayTeam: 'Real Betis', customCoinsReward: 50 },
-  'm_laliga_betis_realmadrid': { homeScore: 1, awayScore: 2, homeTeamAr: 'ريال بيتيس', awayTeamAr: 'ريال مدريد', homeTeam: 'Real Betis', awayTeam: 'Real Madrid', customCoinsReward: 50 },
-  'm_laliga_realmadrid_betis': { homeScore: 2, awayScore: 1, homeTeamAr: 'ريال مدريد', awayTeamAr: 'ريال بيتيس', homeTeam: 'Real Madrid', awayTeam: 'Real Betis', customCoinsReward: 50 },
   'm_laliga_osasuna_getafe': { homeScore: 1, awayScore: 0, homeTeamAr: 'أوساسونا', awayTeamAr: 'خيتافي', homeTeam: 'CA Osasuna', awayTeam: 'Getafe CF', customCoinsReward: 50 },
   'm_laliga_getafe_osasuna': { homeScore: 0, awayScore: 1, homeTeamAr: 'خيتافي', awayTeamAr: 'أوساسونا', homeTeam: 'Getafe CF', awayTeam: 'CA Osasuna', customCoinsReward: 50 },
   'm_laliga_barcelona_rayo': { homeScore: 5, awayScore: 2, homeTeamAr: 'برشلونة', awayTeamAr: 'رايو فاليكانو', homeTeam: 'FC Barcelona', awayTeam: 'Rayo Vallecano', customCoinsReward: 50 },
@@ -156,15 +152,43 @@ export const FINISHED_MATCHES_CATALOG: Record<string, {
   'm_laliga_valencia_barcelona': { homeScore: 0, awayScore: 5, homeTeamAr: 'فالنسيا', awayTeamAr: 'برشلونة', homeTeam: 'Valencia CF', awayTeam: 'FC Barcelona', customCoinsReward: 50 },
   'm_superlig_trabzonspor_genclerbirligi_sep6': { homeScore: 2, awayScore: 0, homeTeamAr: 'طرابزون سبور', awayTeamAr: 'غنتشليربيرليغي', homeTeam: 'Trabzonspor', awayTeam: 'Gençlerbirliği SK', customCoinsReward: 50 },
   'm_superlig_trabzonspor_genclerbirligi': { homeScore: 2, awayScore: 0, homeTeamAr: 'طرابزون سبور', awayTeamAr: 'غنتشليربيرليغي', homeTeam: 'Trabzonspor', awayTeam: 'Gençlerbirliği SK', customCoinsReward: 50 },
+
+  // UEFA Champions League: Real Madrid 2 - 1 Inter Milan (150 coins reward)
+  'm_ucl_realmadrid_inter_sep8': { homeScore: 2, awayScore: 1, homeTeamAr: 'الريال', awayTeamAr: 'الإنتر', homeTeam: 'Real Madrid', awayTeam: 'Inter Milan', customCoinsReward: 150 },
+  'm_ucl_realmadrid_inter': { homeScore: 2, awayScore: 1, homeTeamAr: 'الريال', awayTeamAr: 'الإنتر', homeTeam: 'Real Madrid', awayTeam: 'Inter Milan', customCoinsReward: 150 },
+  'm_ucl_inter_realmadrid': { homeScore: 1, awayScore: 2, homeTeamAr: 'الإنتر', awayTeamAr: 'الريال', homeTeam: 'Inter Milan', awayTeam: 'Real Madrid', customCoinsReward: 150 },
+
+  // Egyptian Premier League: Al Mokawloon 1 - 1 Al Ahly (50 coins reward)
+  'm_egy_mokawloon_ahly_sep9': { homeScore: 1, awayScore: 1, homeTeamAr: 'المقاولون', awayTeamAr: 'الأهلي', homeTeam: 'Al Mokawloon Al Arab', awayTeam: 'Al Ahly SC', customCoinsReward: 50 },
+  'm_egy_mokawloon_ahly': { homeScore: 1, awayScore: 1, homeTeamAr: 'المقاولون', awayTeamAr: 'الأهلي', homeTeam: 'Al Mokawloon Al Arab', awayTeam: 'Al Ahly SC', customCoinsReward: 50 },
+  'm_egy_ahly_mokawloon_sep9': { homeScore: 1, awayScore: 1, homeTeamAr: 'الأهلي', awayTeamAr: 'المقاولون', homeTeam: 'Al Ahly SC', awayTeam: 'Al Mokawloon Al Arab', customCoinsReward: 50 },
+  'm_egy_ahly_mokawloon': { homeScore: 1, awayScore: 1, homeTeamAr: 'الأهلي', awayTeamAr: 'المقاولون', homeTeam: 'Al Ahly SC', awayTeam: 'Al Mokawloon Al Arab', customCoinsReward: 50 },
+
+  // Saturday 9/12 Matches
+  // Premier League: Liverpool 0 - 0 Fulham (50 coins reward)
+  'm_epl_liverpool_fulham_sep12': { homeScore: 0, awayScore: 0, homeTeamAr: 'ليفربول', awayTeamAr: 'فولهام', homeTeam: 'Liverpool FC', awayTeam: 'Fulham FC', customCoinsReward: 50 },
+  'm_epl_liverpool_fulham': { homeScore: 0, awayScore: 0, homeTeamAr: 'ليفربول', awayTeamAr: 'فولهام', homeTeam: 'Liverpool FC', awayTeam: 'Fulham FC', customCoinsReward: 50 },
+  'm_epl_fulham_liverpool_sep12': { homeScore: 0, awayScore: 0, homeTeamAr: 'فولهام', awayTeamAr: 'ليفربول', homeTeam: 'Fulham FC', awayTeam: 'Liverpool FC', customCoinsReward: 50 },
+
+  // Saudi Pro League: Al Khaleej 1 - 1 Al Nassr (50 coins reward)
+  'm_spl_alkhaleej_alnassr_sep12': { homeScore: 1, awayScore: 1, homeTeamAr: 'الخليج', awayTeamAr: 'النصر', homeTeam: 'Al Khaleej FC', awayTeam: 'Al Nassr FC', customCoinsReward: 50 },
+  'm_spl_alkhaleej_alnassr': { homeScore: 1, awayScore: 1, homeTeamAr: 'الخليج', awayTeamAr: 'النصر', homeTeam: 'Al Khaleej FC', awayTeam: 'Al Nassr FC', customCoinsReward: 50 },
+  'm_spl_alnassr_alkhaleej_sep12': { homeScore: 1, awayScore: 1, homeTeamAr: 'النصر', awayTeamAr: 'الخليج', homeTeam: 'Al Nassr FC', awayTeam: 'Al Khaleej FC', customCoinsReward: 50 },
+
+  // La Liga: Real Madrid 4 - 1 Rayo Vallecano (50 coins reward)
+  'm_laliga_realmadrid_rayo_sep12': { homeScore: 4, awayScore: 1, homeTeamAr: 'الريال', awayTeamAr: 'رايو فاليكانو', homeTeam: 'Real Madrid', awayTeam: 'Rayo Vallecano', customCoinsReward: 50 },
+  'm_laliga_realmadrid_rayo': { homeScore: 4, awayScore: 1, homeTeamAr: 'الريال', awayTeamAr: 'رايو فاليكانو', homeTeam: 'Real Madrid', awayTeam: 'Rayo Vallecano', customCoinsReward: 50 },
+  'm_laliga_rayo_realmadrid_sep12': { homeScore: 1, awayScore: 4, homeTeamAr: 'رايو فاليكانو', awayTeamAr: 'الريال', homeTeam: 'Rayo Vallecano', awayTeam: 'Real Madrid', customCoinsReward: 50 },
+
+  // Premier League: Manchester United 0 - 1 Manchester City (50 coins reward per user directive)
+  'm_epl_manutd_mancity_sep13': { homeScore: 0, awayScore: 1, homeTeamAr: 'مان يونايتد', awayTeamAr: 'مان سيتي', homeTeam: 'Manchester United', awayTeam: 'Manchester City', customCoinsReward: 50 },
+  'm_epl_manutd_mancity': { homeScore: 0, awayScore: 1, homeTeamAr: 'مان يونايتد', awayTeamAr: 'مان سيتي', homeTeam: 'Manchester United', awayTeam: 'Manchester City', customCoinsReward: 50 },
+  'm_epl_mancity_manutd_sep13': { homeScore: 1, awayScore: 0, homeTeamAr: 'مان سيتي', awayTeamAr: 'مان يونايتد', homeTeam: 'Manchester City', awayTeam: 'Manchester United', customCoinsReward: 50 },
+  'm_epl_mancity_manutd': { homeScore: 1, awayScore: 0, homeTeamAr: 'مان سيتي', awayTeamAr: 'مان يونايتد', homeTeam: 'Manchester City', awayTeam: 'Manchester United', customCoinsReward: 50 },
 };
 
 export const KNOWN_UPCOMING_MATCH_IDS = new Set([
-  'm_egy_mokawloon_ahly_sep9',
-  'm_laliga_realmadrid_rayo_sep12',
   'm_egy_ahly_abuqir_sep15',
-  'm_ucl_realmadrid_inter_sep8',
-  'm_ucl_realmadrid_inter',
-  'm_ucl_inter_realmadrid',
 ]);
 
 /**
@@ -399,23 +423,23 @@ export function evaluateUserPredictionsList(
       return;
     }
 
-    // Normalize fulham chelsea and realmadrid inter ID aliases
+    // Normalize fulham chelsea, realmadrid inter, and mokawloon ahly ID aliases
     let canonicalId = mId;
     if (mId === 'm_epl_chelsea_fulham' || mId === 'm_epl_fulham_chelsea') {
       canonicalId = 'm_epl_fulham_chelsea';
     } else if (mId.includes('realmadrid_inter') || mId.includes('inter_realmadrid')) {
       canonicalId = 'm_ucl_realmadrid_inter_sep8';
+    } else if (mId.includes('mokawloon_ahly') || mId.includes('ahly_mokawloon')) {
+      canonicalId = 'm_egy_mokawloon_ahly_sep9';
     }
-
-    const isUpcomingMatchReset = canonicalId === 'm_ucl_realmadrid_inter_sep8';
 
     if (!predMap.has(canonicalId)) {
       predMap.set(canonicalId, { 
         ...p, 
         matchId: canonicalId,
-        status: isUpcomingMatchReset ? 'PENDING' : (p.status || 'PENDING'),
-        coinsEarned: isUpcomingMatchReset ? 0 : (p.coinsEarned || 0),
-        pointsEarned: isUpcomingMatchReset ? 0 : (p.pointsEarned || 0),
+        status: p.status || 'PENDING',
+        coinsEarned: p.coinsEarned || 0,
+        pointsEarned: p.pointsEarned || 0,
       });
     } else {
       const existing = predMap.get(canonicalId);
@@ -423,14 +447,24 @@ export function evaluateUserPredictionsList(
       const isReevaluatedMatch = canonicalId.includes('zamalek_abuqir') || 
         canonicalId.includes('abuqir_zamalek') || 
         canonicalId.includes('betis_realmadrid') || 
-        canonicalId.includes('realmadrid_betis');
+        canonicalId.includes('realmadrid_betis') ||
+        canonicalId.includes('realmadrid_inter') ||
+        canonicalId.includes('inter_realmadrid') ||
+        canonicalId.includes('mokawloon_ahly') ||
+        canonicalId.includes('ahly_mokawloon') ||
+        canonicalId.includes('liverpool_fulham') ||
+        canonicalId.includes('fulham_liverpool') ||
+        canonicalId.includes('alkhaleej_alnassr') ||
+        canonicalId.includes('alnassr_alkhaleej') ||
+        canonicalId.includes('realmadrid_rayo') ||
+        canonicalId.includes('rayo_realmadrid');
       predMap.set(canonicalId, {
         ...existing,
         ...p,
         matchId: canonicalId,
-        status: isUpcomingMatchReset ? 'PENDING' : (isReevaluatedMatch ? (p.status || existing.status) : (p.status === 'EXACT_SCORE' || existing.status === 'EXACT_SCORE' ? 'EXACT_SCORE' : (p.status || existing.status))),
-        coinsEarned: isUpcomingMatchReset ? 0 : (isReevaluatedMatch ? (p.coinsEarned || 0) : Math.max(p.coinsEarned || 0, existing.coinsEarned || 0)),
-        pointsEarned: isUpcomingMatchReset ? 0 : (isReevaluatedMatch ? (p.pointsEarned || 0) : Math.max(p.pointsEarned || 0, existing.pointsEarned || 0)),
+        status: isReevaluatedMatch ? (p.status || existing.status) : (p.status === 'EXACT_SCORE' || existing.status === 'EXACT_SCORE' ? 'EXACT_SCORE' : (p.status || existing.status)),
+        coinsEarned: isReevaluatedMatch ? (p.coinsEarned || 0) : Math.max(p.coinsEarned || 0, existing.coinsEarned || 0),
+        pointsEarned: isReevaluatedMatch ? (p.pointsEarned || 0) : Math.max(p.pointsEarned || 0, existing.pointsEarned || 0),
         coinsSpent: typeof p.coinsSpent === 'number' ? p.coinsSpent : (typeof existing.coinsSpent === 'number' ? existing.coinsSpent : 0),
       });
     }
@@ -462,10 +496,10 @@ export function evaluateUserPredictionsList(
     const predHome = Number(pred.predictedHomeScore);
     const predAway = Number(pred.predictedAwayScore);
 
-    // Determine prediction fee spent if any
-    const fee = typeof pred.coinsSpent === 'number' 
+    // Determine prediction fee spent if any (predictions are 100% free by default)
+    const fee = typeof pred.coinsSpent === 'number' && pred.coinsSpent > 0
       ? pred.coinsSpent 
-      : (targetMatch?.predictionFeeCoins || 0);
+      : 0;
     
     totalCoinsSpent += fee;
 
@@ -494,11 +528,11 @@ export function evaluateUserPredictionsList(
       (matchId === 'm_egy_ahly_smouha' ? FINISHED_MATCHES_CATALOG['m_egy_ahly_smouha_sep3'] : undefined) ||
       (matchId === 'm_egy_ahly_smouha_sep3' ? FINISHED_MATCHES_CATALOG['m_egy_ahly_smouha'] : undefined);
 
-    // Determine actual finished score
+    // Determine actual finished score and coins reward (0 coins reward for matches without customCoinsReward)
     let isFinished = false;
     let actualHomeScore: number | undefined = undefined;
     let actualAwayScore: number | undefined = undefined;
-    let reward = 50;
+    let reward = 0;
 
     const isMatchDone = targetMatch && (
       targetMatch.status === 'FINISHED' || 
@@ -512,17 +546,17 @@ export function evaluateUserPredictionsList(
       isFinished = true;
       actualHomeScore = targetMatch.homeScore;
       actualAwayScore = targetMatch.awayScore;
-      reward = targetMatch.customCoinsReward || 50;
+      reward = typeof targetMatch.customCoinsReward === 'number' ? targetMatch.customCoinsReward : 0;
     } else if (catalogEntry) {
       isFinished = true;
       actualHomeScore = catalogEntry.homeScore;
       actualAwayScore = catalogEntry.awayScore;
-      reward = catalogEntry.customCoinsReward || 50;
+      reward = typeof catalogEntry.customCoinsReward === 'number' ? catalogEntry.customCoinsReward : 0;
     } else if (typeof pred.matchHomeScore === 'number' && typeof pred.matchAwayScore === 'number' && pred.status !== 'PENDING') {
       isFinished = true;
       actualHomeScore = pred.matchHomeScore;
       actualAwayScore = pred.matchAwayScore;
-      reward = pred.coinsEarned || pred.pointsEarned || 50;
+      reward = typeof pred.coinsEarned === 'number' ? pred.coinsEarned : (catalogEntry?.customCoinsReward || 0);
     }
 
     if (isFinished && typeof actualHomeScore === 'number' && typeof actualAwayScore === 'number') {
@@ -534,22 +568,45 @@ export function evaluateUserPredictionsList(
 
       const isZamalekAboQir = matchId.includes('zamalek_abuqir') || matchId.includes('abuqir_zamalek');
       const isBetisRealMadrid = matchId.includes('betis_realmadrid') || matchId.includes('realmadrid_betis');
+      const isRealMadridInter = matchId.includes('realmadrid_inter') || matchId.includes('inter_realmadrid');
+      const isMokawloonAhly = matchId.includes('mokawloon_ahly') || matchId.includes('ahly_mokawloon');
+      const isLiverpoolFulham = matchId.includes('liverpool_fulham') || matchId.includes('fulham_liverpool');
+      const isAlkhaleejAlnassr = matchId.includes('alkhaleej_alnassr') || matchId.includes('alnassr_alkhaleej');
+      const isRealMadridRayo = matchId.includes('realmadrid_rayo') || matchId.includes('rayo_realmadrid');
+
+      if (isRealMadridInter) {
+        reward = 150;
+      } else if (isMokawloonAhly || isLiverpoolFulham || isAlkhaleejAlnassr || isRealMadridRayo) {
+        reward = 50;
+      }
 
       const isExactScore = isZamalekAboQir
         ? ((matchId.includes('zamalek_abuqir') && predHome === 2 && predAway === 0) || (matchId.includes('abuqir_zamalek') && predHome === 0 && predAway === 2))
         : isBetisRealMadrid
         ? ((matchId.includes('betis_realmadrid') && predHome === 1 && predAway === 2) || (matchId.includes('realmadrid_betis') && predHome === 2 && predAway === 1))
+        : isRealMadridInter
+        ? ((matchId.includes('realmadrid_inter') && predHome === 2 && predAway === 1) || (matchId.includes('inter_realmadrid') && predHome === 1 && predAway === 2) || (predHome === 2 && predAway === 1))
+        : isMokawloonAhly
+        ? (predHome === 1 && predAway === 1)
+        : isLiverpoolFulham
+        ? (predHome === 0 && predAway === 0)
+        : isAlkhaleejAlnassr
+        ? (predHome === 1 && predAway === 1)
+        : isRealMadridRayo
+        ? ((matchId.includes('realmadrid_rayo') && predHome === 4 && predAway === 1) || (matchId.includes('rayo_realmadrid') && predHome === 1 && predAway === 4) || (predHome === 4 && predAway === 1))
         : ((predHome === actualHomeScore && predAway === actualAwayScore) ||
           (matchId.includes('fulham_chelsea') && predHome === 3 && predAway === 2) ||
           ((matchId.includes('ipswich_liverpool') || matchId.includes('liverpool_ipswich')) && ((predHome === 0 && predAway === 2) || (predHome === 2 && predAway === 0))));
 
       if (isExactScore) {
+        const exactCoins = reward; // 0 coins reward going forward, 50 coins for specified matches
+        const exactPoints = reward > 0 ? reward : 10;
         const item = {
           ...pred,
           matchId,
           status: 'EXACT_SCORE',
-          pointsEarned: reward,
-          coinsEarned: reward,
+          pointsEarned: exactPoints,
+          coinsEarned: exactCoins,
           coinsSpent: fee,
           evaluated: true,
           matchHomeScore: actualHomeScore,
@@ -558,7 +615,7 @@ export function evaluateUserPredictionsList(
         };
         evaluatedPredictions.push(item);
         winningPredictions.push(item);
-        totalEarnedCoins += reward;
+        totalEarnedCoins += exactCoins;
         exactPredictionsCount += 1;
       } else {
         evaluatedPredictions.push({
@@ -573,7 +630,7 @@ export function evaluateUserPredictionsList(
           matchAwayScore: actualAwayScore,
         });
       }
-    } else if (!matchId.includes('zamalek_abuqir') && !matchId.includes('abuqir_zamalek') && !matchId.includes('betis_realmadrid') && !matchId.includes('realmadrid_betis') && !matchId.includes('realmadrid_inter') && !matchId.includes('inter_realmadrid') && !matchId.includes('sociedad_celta') && !matchId.includes('celta_sociedad') && (pred.status === 'EXACT_SCORE' || (typeof pred.coinsEarned === 'number' && pred.coinsEarned >= 50) || (typeof pred.pointsEarned === 'number' && pred.pointsEarned >= 50))) {
+    } else if (!matchId.includes('zamalek_abuqir') && !matchId.includes('abuqir_zamalek') && !matchId.includes('betis_realmadrid') && !matchId.includes('realmadrid_betis') && !matchId.includes('realmadrid_inter') && !matchId.includes('inter_realmadrid') && !matchId.includes('mokawloon_ahly') && !matchId.includes('ahly_mokawloon') && !matchId.includes('sociedad_celta') && !matchId.includes('celta_sociedad') && !matchId.includes('liverpool_fulham') && !matchId.includes('fulham_liverpool') && !matchId.includes('alkhaleej_alnassr') && !matchId.includes('alnassr_alkhaleej') && !matchId.includes('realmadrid_rayo') && !matchId.includes('rayo_realmadrid') && (pred.status === 'EXACT_SCORE' || (typeof pred.coinsEarned === 'number' && pred.coinsEarned >= 50) || (typeof pred.pointsEarned === 'number' && pred.pointsEarned >= 50))) {
       // Historically verified winning prediction (e.g. friendly match / custom match)
       const historicalReward = pred.coinsEarned || pred.pointsEarned || 50;
       const item = {

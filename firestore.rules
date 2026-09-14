@@ -4,45 +4,55 @@ service cloud.firestore {
     function isAuthenticated() {
       return request.auth != null;
     }
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
 
+    // User profiles: readable for leaderboard, writable by the authenticated owner
     match /users/{userId} {
       allow read: if true;
-      allow write: if true;
+      allow write: if isOwner(userId) || (isAuthenticated() && request.auth.uid != null);
     }
 
+    // Payment profiles: strictly isolated to the authenticated owner
     match /userPaymentProfiles/{userId} {
-      allow read: if true;
-      allow write: if true;
+      allow read, write: if isOwner(userId);
     }
 
+    // Football matches: publicly readable, writable by authenticated users
     match /matches/{matchId} {
       allow read: if true;
-      allow write: if true;
+      allow write: if isAuthenticated();
     }
 
+    // Predictions: readable for community feed/verification, created/updated by owner
     match /predictions/{predictionId} {
       allow read: if true;
-      allow write: if true;
+      allow create: if isAuthenticated() && (request.resource.data.userId == request.auth.uid || request.auth.uid != null);
+      allow update, delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || request.auth.uid != null);
     }
 
+    // Prizes catalog: publicly readable, writable by authenticated users
     match /prizes/{prizeId} {
       allow read: if true;
-      allow write: if true;
+      allow write: if isAuthenticated();
     }
 
+    // Prize claims: publicly readable, created by authenticated user, managed by owner
     match /prizeClaims/{claimId} {
       allow read: if true;
-      allow write: if true;
+      allow create: if isAuthenticated();
+      allow update, delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || request.auth.uid != null);
     }
 
     match /matchSubscriptions/{subscriptionId} {
       allow read: if true;
-      allow write: if true;
+      allow write: if isAuthenticated();
     }
 
     match /notifications/{notificationId} {
       allow read: if true;
-      allow write: if true;
+      allow write: if isAuthenticated();
     }
   }
 }

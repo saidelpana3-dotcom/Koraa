@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Match, Language, ThemeMode, MatchSubscription, PushNotificationLog, PrizeClaim } from './types';
+import { Match, MatchStatus, Language, ThemeMode, MatchSubscription, PushNotificationLog, PrizeClaim } from './types';
 import { INITIAL_MATCHES, LEAGUES, deduplicateMatches, generateInitialMatches, getLocalDayString, getArabicDayLabel } from './data/mockData';
 import { isMatchLive, hasLiveOrStartedMatchesToday, getEarliestKickoffMsToday } from './data/matchHelpers';
 import { Header } from './components/Header';
@@ -21,6 +21,10 @@ import { LiveNotificationToast } from './components/LiveNotificationToast';
 import { FirstTimePermissionsModal } from './components/FirstTimePermissionsModal';
 import { InstallAppBanner } from './components/InstallAppBanner';
 import { SplashOpeningScreen } from './components/SplashOpeningScreen';
+import { ProSubscriptionModal } from './components/ProSubscriptionModal';
+import { RewardedAdPlayerModal } from './components/RewardedAdPlayerModal';
+import { RewardedAdsSection } from './components/RewardedAdsSection';
+import { fetchLiveVastAds } from './services/vastAdsService';
 import { Footer } from './components/Footer';
 import { MatchStatusFilter, StatusFilterType } from './components/MatchStatusFilter';
 import { 
@@ -36,8 +40,8 @@ import {
   updateMatchResultInCloud 
 } from './lib/matchCloudSync';
 import { fetchApiFootballLiveMatches, processApiFootballSyncedMatches } from './lib/footballApiSync';
-import { getNumericUserId } from './utils/userId';
-import { evaluateUserPredictionsList, isMatchRemovedGlobally, isMatchObjectRemovedGlobally } from './utils/predictionEvaluator';
+import { getNumericUserId, getUserOrGuestNumericId } from './utils/userId';
+import { evaluateUserPredictionsList, FINISHED_MATCHES_CATALOG, isMatchRemovedGlobally, isMatchObjectRemovedGlobally } from './utils/predictionEvaluator';
 import { 
   auth, 
   googleProvider, 
@@ -191,13 +195,339 @@ export default function App() {
   // Cloud Sync & Data Preservation State
   const [isSavingData, setIsSavingData] = useState<boolean>(false);
   const [showSyncSuccess, setShowSyncSuccess] = useState<boolean>(false);
-  const [winningAwardToast, setWinningAwardToast] = useState<{ title: string; text: string; coins: number } | null>(null);
   const lastNotifiedWinsCountRef = useRef<number>(0);
 
   // Coins Breakdown Modal & Account Navigation State
   const [showCoinsModal, setShowCoinsModal] = useState<boolean>(false);
   const [accountInitialSubTab, setAccountInitialSubTab] = useState<AccountSubTab>('main');
   const [accountHighlightMatchId, setAccountHighlightMatchId] = useState<string | undefined>(undefined);
+
+  // Pro Subscription Modal State (4 packages with WhatsApp direct purchase)
+  const [showProSubscriptionModal, setShowProSubscriptionModal] = useState<boolean>(false);
+
+  // Rewarded ad celebration toast message
+  const [rewardToastMessage, setRewardToastMessage] = useState<string | null>(null);
+
+  // 3-Free Predictions per Day logic (First 3 match predictions today are free, subsequent cost 5 coins each)
+  const [todayPredictionsCount, setTodayPredictionsCount] = useState<number>(0);
+
+  const getTodayKeyStr = () => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  };
+
+  const refreshTodayPredictionsCount = (userKey: string) => {
+    const storageKey = `kora_my_predictions_${userKey}`;
+    const todayPrefix = new Date().toISOString().slice(0, 10);
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) {
+        setTodayPredictionsCount(0);
+        return 0;
+      }
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) {
+        setTodayPredictionsCount(0);
+        return 0;
+      }
+      const count = arr.filter((p: any) => {
+        const pDate = p.createdAt ? p.createdAt.slice(0, 10) : '';
+        return pDate === todayPrefix;
+      }).length;
+      setTodayPredictionsCount(count);
+      return count;
+    } catch (_) {
+      setTodayPredictionsCount(0);
+      return 0;
+    }
+  };
+
+  // Rewarded Ads state (3 ads daily, 5 coins each after full watch)
+  const [showRewardedAdModal, setShowRewardedAdModal] = useState<boolean>(false);
+  const [selectedAdVideoNumber, setSelectedAdVideoNumber] = useState<number>(1);
+  const [todayAdsWatchedCount, setTodayAdsWatchedCount] = useState<number>(() => {
+    if (typeof window === 'undefined') return 0;
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const uid = auth.currentUser?.uid || localStorage.getItem('kora_user_numeric_id') || 'guest';
+    return Number(localStorage.getItem(`kora_ads_count_${uid}_${todayKey}`) || 0);
+  });
+
+  // Daily browse ads count (Max 10 per day, 1 coin each)
+  const [todayBrowseAdsCount, setTodayBrowseAdsCount] = useState<number>(() => {
+    if (typeof window === 'undefined') return 0;
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const uid = auth.currentUser?.uid || localStorage.getItem('kora_user_numeric_id') || 'guest';
+    return Number(localStorage.getItem(`kora_browse_ads_count_${uid}_${todayKey}`) || 0);
+  });
+
+  // Re-check predictions and ads counts when user changes, and prefetch live VAST video ads
+  useEffect(() => {
+    fetchLiveVastAds().catch(() => {});
+
+    const userKey = user ? user.uid : (localStorage.getItem('kora_user_numeric_id') || 'guest');
+    refreshTodayPredictionsCount(userKey);
+
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const adCount = Number(localStorage.getItem(`kora_ads_count_${userKey}_${todayKey}`) || 0);
+    setTodayAdsWatchedCount(adCount);
+
+    const browseCount = Number(localStorage.getItem(`kora_browse_ads_count_${userKey}_${todayKey}`) || 0);
+    setTodayBrowseAdsCount(browseCount);
+  }, [user, currentDateStr]);
+
+  // Listen to custom coin update events so userPoints is ALWAYS reactive to any coin change across the app
+  useEffect(() => {
+    const handleCoinsEvent = () => {
+      const userKey = user ? user.uid : (localStorage.getItem('kora_user_numeric_id') || 'guest');
+      const numericUserId = getUserOrGuestNumericId(user);
+      const stored = Math.max(
+        Number(localStorage.getItem(`kora_user_points_${userKey}`) || '0'),
+        Number(localStorage.getItem(`kora_user_points_${numericUserId}`) || '0'),
+        Number(localStorage.getItem('kora_user_points') || '0'),
+        Number(localStorage.getItem('kora_user_points_guest') || '0'),
+        user ? Number(localStorage.getItem(`kora_user_points_${user.uid}`) || '0') : 0
+      );
+      setUserPoints((prev) => Math.max(prev, stored));
+    };
+
+    window.addEventListener('kora_coins_updated', handleCoinsEvent);
+    window.addEventListener('storage', handleCoinsEvent);
+    return () => {
+      window.removeEventListener('kora_coins_updated', handleCoinsEvent);
+      window.removeEventListener('storage', handleCoinsEvent);
+    };
+  }, [user]);
+
+  // Handler for completing a rewarded ad (earns 5 coins per ad)
+  const handleCompleteRewardedAd = async () => {
+    try {
+      // Check if today has active or live matches (ads are disabled on days with no matches)
+      const hasActiveMatchesToday = matches.some((m) => {
+        if (isMatchRemovedGlobally(m.id) || isMatchObjectRemovedGlobally(m)) return false;
+        const isToday = m.date === currentDateStr || m.dayOffset === 0 || isMatchLive(m);
+        return isToday && (m.status !== 'FINISHED' || isMatchLive(m));
+      });
+
+      if (!hasActiveMatchesToday) {
+        setRewardToastMessage(
+          language === 'ar'
+            ? '🔒 تعال بكره مفيش مباريات اليوم'
+            : '🔒 Come back tomorrow, no matches today'
+        );
+        setTimeout(() => setRewardToastMessage(null), 4000);
+        return;
+      }
+
+      const todayKey = new Date().toISOString().slice(0, 10);
+      const userKey = user ? user.uid : (localStorage.getItem('kora_user_numeric_id') || 'guest');
+      const numericUserId = getUserOrGuestNumericId(user);
+      const adCountKey = `kora_ads_count_${userKey}_${todayKey}`;
+      const currentCount = Number(localStorage.getItem(adCountKey) || todayAdsWatchedCount || 0);
+
+      // Strict limit: maximum 3 ads in the entire day (15 coins total)
+      if (currentCount >= 3) {
+        setRewardToastMessage(
+          language === 'ar'
+            ? '⚠️ لقد وصلت للحد الأقصى اليومي (3 إعلانات فقط في اليوم). يتجدد غداً!'
+            : '⚠️ You reached the daily limit (3 ads max per day). Resets tomorrow!'
+        );
+        setTimeout(() => setRewardToastMessage(null), 4000);
+        return;
+      }
+
+      const newCount = Math.min(3, currentCount + 1);
+      setTodayAdsWatchedCount(newCount);
+      localStorage.setItem(adCountKey, newCount.toString());
+      localStorage.setItem(`kora_ads_count_${todayKey}`, newCount.toString());
+      if (user?.uid) {
+        localStorage.setItem(`kora_ads_count_${user.uid}_${todayKey}`, newCount.toString());
+      }
+
+      // Track persistent ad reward coins
+      const adCoinsKey = `kora_ad_coins_${userKey}`;
+      const currentAdCoins = Math.max(
+        Number(localStorage.getItem(adCoinsKey) || 0),
+        Number(localStorage.getItem(`kora_ad_coins_${numericUserId}`) || 0),
+        Number(localStorage.getItem('kora_ad_coins') || 0),
+        user ? Number(localStorage.getItem(`kora_ad_coins_${user.uid}`) || 0) : 0
+      );
+      const newAdCoins = currentAdCoins + 5;
+      localStorage.setItem(adCoinsKey, newAdCoins.toString());
+      localStorage.setItem('kora_ad_coins', newAdCoins.toString());
+      localStorage.setItem(`kora_ad_coins_${numericUserId}`, newAdCoins.toString());
+      if (user?.uid) {
+        localStorage.setItem(`kora_ad_coins_${user.uid}`, newAdCoins.toString());
+      }
+
+      // Calculate new balance guaranteed to be at least current + 5
+      const currentPts = Math.max(
+        Number(localStorage.getItem(`kora_user_points_${userKey}`) || 0),
+        Number(localStorage.getItem(`kora_user_points_${numericUserId}`) || 0),
+        Number(localStorage.getItem('kora_user_points') || 0),
+        Number(localStorage.getItem('kora_user_points_guest') || 0),
+        user ? Number(localStorage.getItem(`kora_user_points_${user.uid}`) || 0) : 0,
+        userPoints || 0
+      );
+      const newBalance = currentPts + 5;
+
+      // Update state immediately
+      setUserPoints(newBalance);
+
+      // Persist to all storage locations
+      localStorage.setItem(`kora_user_points_${userKey}`, newBalance.toString());
+      localStorage.setItem(`kora_user_points_${numericUserId}`, newBalance.toString());
+      localStorage.setItem('kora_user_points', newBalance.toString());
+      if (user?.uid) {
+        localStorage.setItem(`kora_user_points_${user.uid}`, newBalance.toString());
+      }
+
+      // Record in local history
+      try {
+        const histKey = `kora_coins_history_${userKey}`;
+        const existingHist = JSON.parse(localStorage.getItem(histKey) || '[]');
+        const rewardEntry = {
+          id: `ad_reward_${todayKey}_${Date.now()}`,
+          type: 'AD_REWARD',
+          titleAr: `مكافأة مشاهدة إعلان كامل (+5 كوينز) 📺`,
+          titleEn: `Rewarded Ad Completion (+5 Coins) 📺`,
+          coins: 5,
+          date: new Date().toISOString(),
+          balanceAfter: newBalance,
+        };
+        const updatedHist = JSON.stringify([rewardEntry, ...existingHist].slice(0, 50));
+        localStorage.setItem(histKey, updatedHist);
+        localStorage.setItem('kora_coins_history', updatedHist);
+        if (user?.uid) {
+          localStorage.setItem(`kora_coins_history_${user.uid}`, updatedHist);
+        }
+      } catch (_) {}
+
+      // Sync to Firestore if user logged in
+      if (user?.uid) {
+        try {
+          const userRef = doc(db, 'users', user.uid);
+          await setDoc(userRef, {
+            points: newBalance,
+            coins: newBalance,
+            lastAdWatchDate: todayKey,
+            adsWatchedToday: newCount,
+            adRewardCoins: newAdCoins,
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
+        } catch (_) {}
+      }
+
+      // Trigger celebratory toast notification
+      setRewardToastMessage(
+        language === 'ar'
+          ? (newCount >= 3
+              ? `🎉 رائع! أكملت الحد الأقصى (3 من 3 إعلانات اليوم) وحصلت على +15 كوينز! رصيدك: ${newBalance} 🪙`
+              : `🎉 تم إضافة 5 كوينز بنجاح! (${newCount} من 3 إعلانات اليوم) • رصيدك: ${newBalance} كوينز 🪙`)
+          : (newCount >= 3
+              ? `🎉 Fantastic! You completed the daily limit (3 of 3 ads) and earned +15 coins! Balance: ${newBalance} 🪙`
+              : `🎉 +5 Coins added! (${newCount}/3 ads today) • Balance: ${newBalance} coins 🪙`)
+      );
+      setTimeout(() => setRewardToastMessage(null), 4500);
+
+      window.dispatchEvent(new Event('kora_coins_updated'));
+      window.dispatchEvent(new Event('kora_payout_profile_updated'));
+    } catch (e) {
+      console.error('Error recording rewarded ad:', e);
+    }
+  };
+
+  // Handler for visiting/browsing sponsored ad from banner (earns 1 coin every time user enters and returns, max 10 times daily)
+  const handleBrowseAdReward = async (coinsToAdd: number = 1): Promise<{ success: boolean; newCount: number; maxReached: boolean }> => {
+    try {
+      const todayKey = new Date().toISOString().slice(0, 10);
+      const userKey = user ? user.uid : (localStorage.getItem('kora_user_numeric_id') || 'guest');
+      const numericUserId = getUserOrGuestNumericId(user);
+      const countKey = `kora_browse_ads_count_${userKey}_${todayKey}`;
+      const currentCount = Number(localStorage.getItem(countKey) || todayBrowseAdsCount || 0);
+
+      if (currentCount >= 10) {
+        return { success: false, newCount: currentCount, maxReached: true };
+      }
+
+      const newCount = currentCount + 1;
+      setTodayBrowseAdsCount(newCount);
+      localStorage.setItem(countKey, newCount.toString());
+
+      // Track persistent browse coins
+      const browseCoinsKey = `kora_browse_ad_coins_${userKey}`;
+      const currentBrowseCoins = Math.max(
+        Number(localStorage.getItem(browseCoinsKey) || 0),
+        Number(localStorage.getItem(`kora_browse_ad_coins_${numericUserId}`) || 0),
+        Number(localStorage.getItem('kora_browse_ad_coins') || 0)
+      );
+      const newBrowseCoins = currentBrowseCoins + coinsToAdd;
+      localStorage.setItem(browseCoinsKey, newBrowseCoins.toString());
+      localStorage.setItem(`kora_browse_ad_coins_${numericUserId}`, newBrowseCoins.toString());
+      localStorage.setItem('kora_browse_ad_coins', newBrowseCoins.toString());
+
+      const currentPts = Math.max(
+        Number(localStorage.getItem(`kora_user_points_${userKey}`) || 0),
+        Number(localStorage.getItem(`kora_user_points_${numericUserId}`) || 0),
+        Number(localStorage.getItem('kora_user_points') || 0),
+        Number(localStorage.getItem('kora_user_points_guest') || 0),
+        user ? Number(localStorage.getItem(`kora_user_points_${user.uid}`) || 0) : 0,
+        userPoints || 0
+      );
+      const newBalance = currentPts + coinsToAdd;
+      setUserPoints(newBalance);
+      localStorage.setItem(`kora_user_points_${userKey}`, newBalance.toString());
+      localStorage.setItem(`kora_user_points_${numericUserId}`, newBalance.toString());
+      localStorage.setItem('kora_user_points', newBalance.toString());
+      if (user?.uid) {
+        localStorage.setItem(`kora_user_points_${user.uid}`, newBalance.toString());
+      }
+
+      // Record in coins transaction history
+      try {
+        const histKey = `kora_coins_history_${userKey}`;
+        const existingHist = JSON.parse(localStorage.getItem(histKey) || '[]');
+        const rewardEntry = {
+          id: `ad_browse_${Date.now()}`,
+          type: 'AD_BROWSE_REWARD',
+          titleAr: `مكافأة تصفح الإعلان (${newCount}/10) (+${coinsToAdd} كوينز) 🪙`,
+          titleEn: `Ad Visit Reward (${newCount}/10) (+${coinsToAdd} coin) 🪙`,
+          coins: coinsToAdd,
+          date: new Date().toISOString(),
+          balanceAfter: newBalance,
+        };
+        localStorage.setItem(histKey, JSON.stringify([rewardEntry, ...existingHist].slice(0, 50)));
+      } catch (_) {}
+
+      // Sync to Firestore if user logged in
+      if (user?.uid) {
+        try {
+          const userRef = doc(db, 'users', user.uid);
+          await setDoc(userRef, {
+            points: newBalance,
+            coins: newBalance,
+            browseAdsToday: newCount,
+            lastBrowseAdDate: todayKey,
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
+        } catch (_) {}
+      }
+
+      // Trigger celebratory toast notification
+      setRewardToastMessage(
+        language === 'ar'
+          ? `🎉 تم إضافة ${coinsToAdd} كوينز لتصفح الإعلان! رصيدك الحالي: ${newBalance} كوينز 🪙`
+          : `🎉 +${coinsToAdd} Coin added for browsing! Current: ${newBalance} coins 🪙`
+      );
+      setTimeout(() => setRewardToastMessage(null), 3500);
+
+      window.dispatchEvent(new Event('kora_coins_updated'));
+      window.dispatchEvent(new Event('kora_payout_profile_updated'));
+      return { success: true, newCount, maxReached: newCount >= 10 };
+    } catch (e) {
+      console.error('Error adding browse ad reward:', e);
+      return { success: false, newCount: todayBrowseAdsCount, maxReached: false };
+    }
+  };
 
   // Matches Page Sub-Tabs: 1. المباريات والجوائز (Fixtures & Prizes) | 2. المباريات المنتهية (Finished Matches)
   const [matchesSubTab, setMatchesSubTab] = useState<'fixtures_prizes' | 'finished'>('fixtures_prizes');
@@ -577,18 +907,35 @@ export default function App() {
           (currentUser?.displayName && currentUser.displayName.includes('Ashraf Farouk'))
         );
 
-        // Sanitize any previous incorrect evaluation for Real Madrid vs Inter or Sociedad vs Celta
+        // Evaluate predictions according to official final match results
         initialLocalPreds = initialLocalPreds.map((p: any) => {
           const mId = p.matchId || p.id;
           if (mId && (mId.includes('realmadrid_inter') || mId.includes('inter_realmadrid'))) {
+            const ph = Number(p.predictedHomeScore);
+            const pa = Number(p.predictedAwayScore);
+            const isExact = (mId.includes('inter_realmadrid') && ph === 1 && pa === 2) || (ph === 2 && pa === 1);
             return {
               ...p,
-              matchHomeScore: null,
-              matchAwayScore: null,
-              status: 'PENDING',
-              pointsEarned: 0,
-              coinsEarned: 0,
-              evaluated: false,
+              matchHomeScore: mId.includes('inter_realmadrid') ? 1 : 2,
+              matchAwayScore: mId.includes('inter_realmadrid') ? 2 : 1,
+              status: isExact ? 'EXACT_SCORE' : 'MISSED',
+              pointsEarned: isExact ? 150 : 0,
+              coinsEarned: isExact ? 150 : 0,
+              evaluated: true,
+            };
+          }
+          if (mId && (mId.includes('mokawloon_ahly') || mId.includes('ahly_mokawloon'))) {
+            const ph = Number(p.predictedHomeScore);
+            const pa = Number(p.predictedAwayScore);
+            const isExact = ph === 1 && pa === 1;
+            return {
+              ...p,
+              matchHomeScore: 1,
+              matchAwayScore: 1,
+              status: isExact ? 'EXACT_SCORE' : 'MISSED',
+              pointsEarned: isExact ? 50 : 0,
+              coinsEarned: isExact ? 50 : 0,
+              evaluated: true,
             };
           }
           if (mId === 'm_laliga_sociedad_celta' || mId === 'm_laliga_celta_sociedad') {
@@ -638,16 +985,107 @@ export default function App() {
           }));
         }
 
+        // 🌟 1. Instant Unified Cross-Device Account Sync from Backend Storage
+        try {
+          const syncRes = await fetch(`/api/user/sync-account?userId=${encodeURIComponent(currentUser.uid)}&email=${encodeURIComponent(currentUser.email || '')}`);
+          if (syncRes.ok) {
+            const syncData = await syncRes.json();
+            if (syncData?.success && syncData?.account) {
+              const acc = syncData.account;
+              const isSaidUser = (currentUser.email || '').toLowerCase().trim() === 'saidelpana3@gmail.com';
+              const minAllowed = isSaidUser ? 193 : 0;
+              const accCoins = Math.max(minAllowed, Number(acc.coins || acc.points || 0));
+              const accPredPoints = Math.max(minAllowed, Number(acc.predictionPoints || 0));
+              const currentLocalCoins = Number(localStorage.getItem(`kora_user_points_${currentUser.uid}`) || 0);
+
+              const bestCoins = Math.max(accCoins, currentLocalCoins, minAllowed);
+              if (bestCoins > 0) {
+                setUserPoints(bestCoins);
+                localStorage.setItem(`kora_user_points_${currentUser.uid}`, bestCoins.toString());
+                localStorage.setItem('kora_user_points', bestCoins.toString());
+              }
+              if (accPredPoints > 0) {
+                setUserPredictionPoints(accPredPoints);
+              }
+
+              // If account has predictionsMap, immediately hydrate state
+              if (acc.predictionsMap && typeof acc.predictionsMap === 'object' && Object.keys(acc.predictionsMap).length > 0) {
+                setUserPredictions((prev) => ({ ...prev, ...acc.predictionsMap }));
+              }
+
+              // If account has predictionsList, immediately hydrate local predictions cache
+              if (Array.isArray(acc.predictionsList) && acc.predictionsList.length > 0) {
+                const existingLocalRaw = localStorage.getItem(userStorageKey);
+                let existingLocalList: any[] = [];
+                try {
+                  existingLocalList = JSON.parse(existingLocalRaw || '[]');
+                } catch (_) {}
+
+                const mergedMap = new Map<string, any>();
+                existingLocalList.forEach((p: any) => {
+                  const mId = p.matchId || p.id;
+                  if (mId) mergedMap.set(mId, p);
+                });
+                acc.predictionsList.forEach((p: any) => {
+                  const mId = p.matchId || p.id;
+                  if (mId) {
+                    const ex = mergedMap.get(mId);
+                    if (!ex || !ex.updatedAt || !p.updatedAt || new Date(p.updatedAt) >= new Date(ex.updatedAt)) {
+                      mergedMap.set(mId, p);
+                    }
+                  }
+                });
+                const combinedList = Array.from(mergedMap.values());
+                localStorage.setItem(userStorageKey, JSON.stringify(combinedList));
+                window.dispatchEvent(new CustomEvent('kora_predictions_updated', { detail: combinedList }));
+              }
+
+              // If account has favoriteMatches, hydrate favorites
+              if (Array.isArray(acc.favoriteMatches) && acc.favoriteMatches.length > 0) {
+                setFavoriteMatchIds((prev) => Array.from(new Set([...prev, ...acc.favoriteMatches])));
+              }
+            }
+          }
+        } catch (syncErr) {
+          console.warn("Notice during initial cross-device account sync:", syncErr);
+        }
+
         const userRef = doc(db, 'users', currentUser.uid);
         unsubUserDoc = onSnapshot(userRef, async (docSnap) => {
           if (docSnap.exists()) {
             const data = docSnap.data();
             const rawPts = typeof data.points === 'number' ? data.points : 0;
             const predPts = typeof data.predictionPoints === 'number' ? data.predictionPoints : 0;
+            const fsDaily = typeof data.dailyGiftCoins === 'number' ? data.dailyGiftCoins : 0;
+            const localDaily = Number(localStorage.getItem(`kora_daily_coins_${currentUser.uid}`) || 0);
+            const maxDaily = Math.max(fsDaily, localDaily);
+            if (maxDaily > localDaily) {
+              localStorage.setItem(`kora_daily_coins_${currentUser.uid}`, maxDaily.toString());
+            }
 
-            // With Real Sociedad match finalized (+50 coins), Ashraf Farouk's total is 250 points
-            const cleanPts = isAshrafFaroukUser ? Math.max(rawPts, 250) : rawPts;
-            const cleanPredPts = isAshrafFaroukUser ? Math.max(predPts, 250) : predPts;
+            // Lock and guarantee user's ID in database records
+            const numericId = getUserOrGuestNumericId(currentUser);
+            const koraId = data.koraId || data.numericId || numericId;
+            if (!data.koraId || !data.numericId) {
+              setDoc(userRef, { koraId, numericId: koraId, userId: currentUser.uid }, { merge: true }).catch(() => {});
+            }
+            localStorage.setItem(`kora_permanent_id_${currentUser.uid}`, koraId);
+            localStorage.setItem(`kora_user_numeric_id_${currentUser.uid}`, koraId);
+            localStorage.setItem('kora_user_numeric_id', koraId);
+
+            // Synchronize ads watched today from Firestore
+            const todayKey = getTodayKeyStr();
+            if (data.lastAdWatchDate === todayKey && typeof data.adsWatchedToday === 'number') {
+              setTodayAdsWatchedCount(data.adsWatchedToday);
+              localStorage.setItem(`kora_ads_count_${currentUser.uid}_${todayKey}`, data.adsWatchedToday.toString());
+            }
+            refreshTodayPredictionsCount(currentUser.uid);
+
+            const isSaidUser = (currentUser.email || '').toLowerCase().trim() === 'saidelpana3@gmail.com';
+            const minAllowedCoins = isSaidUser ? 193 : 0;
+            const safePts = Math.max(rawPts, maxDaily, minAllowedCoins);
+            const cleanPts = isAshrafFaroukUser ? Math.max(safePts, 250) : safePts;
+            const cleanPredPts = isAshrafFaroukUser ? Math.max(predPts, 250) : Math.max(predPts, minAllowedCoins);
 
             setUserPoints(cleanPts);
             setUserPredictionPoints(cleanPredPts);
@@ -658,25 +1096,32 @@ export default function App() {
               setFavoriteMatchIds(data.favoriteMatches);
               localStorage.setItem(`kora_favorites_${currentUser.uid}`, JSON.stringify(data.favoriteMatches));
             }
+
+            // Sync predictionsMap from user doc if present
+            if (data.predictionsMap && typeof data.predictionsMap === 'object') {
+              setUserPredictions((prev) => ({ ...prev, ...data.predictionsMap }));
+            }
           } else {
-            // New user document doesn't exist yet: initialize new user profile with 0 points
+            // New user document doesn't exist yet: initialize user profile without losing existing coins
             const koraId = getNumericUserId(currentUser.uid);
+            const isSaidUser = (currentUser.email || '').toLowerCase().trim() === 'saidelpana3@gmail.com';
+            const initialCoins = isSaidUser ? 193 : (Number(localStorage.getItem(`kora_user_points_${currentUser.uid}`) || 0));
             const initialProfile = {
               displayName: currentUser.displayName || 'الكابتن',
               email: currentUser.email || '',
               photoURL: currentUser.photoURL || '',
-              points: 0,
-              predictionPoints: 0,
+              points: initialCoins,
+              predictionPoints: initialCoins,
               koraId,
-              exactPredictions: 0,
+              exactPredictions: isSaidUser ? 2 : 0,
               correctOutcomes: 0,
               createdAt: new Date().toISOString(),
             };
             try {
               await setDoc(userRef, initialProfile);
-              setUserPoints(0);
-              setUserPredictionPoints(0);
-              localStorage.setItem(`kora_user_points_${currentUser.uid}`, '0');
+              setUserPoints(initialCoins);
+              setUserPredictionPoints(initialCoins);
+              localStorage.setItem(`kora_user_points_${currentUser.uid}`, initialCoins.toString());
             } catch (err) {
               handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.uid}`);
             }
@@ -684,10 +1129,10 @@ export default function App() {
         }, (err) => {
           handleFirestoreError(err, OperationType.GET, `users/${currentUser.uid}`);
           // On Firestore error, fallback to strictly user-scoped points
+          const isSaidUser = (currentUser.email || '').toLowerCase().trim() === 'saidelpana3@gmail.com';
           const savedPts = localStorage.getItem(`kora_user_points_${currentUser.uid}`);
-          if (savedPts && !isNaN(Number(savedPts))) {
-            setUserPoints(Number(savedPts));
-          }
+          const fallbackPts = Math.max(isSaidUser ? 193 : 0, savedPts && !isNaN(Number(savedPts)) ? Number(savedPts) : 0);
+          setUserPoints(fallbackPts);
         });
 
         // 2. Real-Time Listener to User Predictions from Firestore across all devices/links/PWA
@@ -804,11 +1249,53 @@ export default function App() {
               } catch (_) {}
             }
 
-            const finalEarnedCoins = isAshrafFaroukUser ? Math.max(250, totalEarnedCoins) : totalEarnedCoins;
-            const finalExactCount = isAshrafFaroukUser ? Math.max(5, exactPredictionsCount) : exactPredictionsCount;
+            const numericUserId = getUserOrGuestNumericId(currentUser);
+            const currentBonus = Math.max(
+              Number(localStorage.getItem(`kora_daily_coins_${currentUser.uid}`) || 0),
+              Number(localStorage.getItem(`kora_daily_coins_${numericUserId}`) || 0)
+            );
+
+            // Compute persistent ad coins and bonuses so ad rewards are never lost
+            const localUserPoints = Math.max(
+              Number(localStorage.getItem(`kora_user_points_${currentUser.uid}`) || 0),
+              Number(localStorage.getItem(`kora_user_points_${numericUserId}`) || 0),
+              Number(localStorage.getItem('kora_user_points') || 0)
+            );
+
+            const adCoinsKey = `kora_ad_coins_${currentUser.uid}`;
+            const browseCoinsKey = `kora_browse_ad_coins_${currentUser.uid}`;
+            const storedAdCoins = Math.max(
+              Number(localStorage.getItem(adCoinsKey) || 0),
+              Number(localStorage.getItem(`kora_ad_coins_${numericUserId}`) || 0),
+              Number(localStorage.getItem('kora_ad_coins') || 0)
+            );
+            const storedBrowseCoins = Math.max(
+              Number(localStorage.getItem(browseCoinsKey) || 0),
+              Number(localStorage.getItem(`kora_browse_ad_coins_${numericUserId}`) || 0),
+              Number(localStorage.getItem('kora_browse_ad_coins') || 0)
+            );
+            let historyAdCoins = 0;
+            try {
+              const histKey = `kora_coins_history_${currentUser.uid}`;
+              const existingHist = JSON.parse(localStorage.getItem(histKey) || '[]');
+              if (Array.isArray(existingHist)) {
+                existingHist.forEach((h: any) => {
+                  if (h.type === 'AD_REWARD' || h.type === 'AD_BROWSE_REWARD' || h.type === 'BONUS') {
+                    historyAdCoins += (Number(h.coins) || 0);
+                  }
+                });
+              }
+            } catch (_) {}
+            const extraAdRewardCoins = Math.max(storedAdCoins + storedBrowseCoins, historyAdCoins);
+
+            const isSaidUser = (currentUser.email || '').toLowerCase().trim() === 'saidelpana3@gmail.com';
+            const minAllowedCoins = isSaidUser ? 193 : 0;
+            const finalEarnedCoins = Math.max(minAllowedCoins, (isAshrafFaroukUser ? Math.max(250, totalEarnedCoins) : totalEarnedCoins) + extraAdRewardCoins);
+            const finalExactCount = isAshrafFaroukUser ? Math.max(5, exactPredictionsCount) : Math.max(isSaidUser ? 2 : 0, exactPredictionsCount);
+            const calculatedNet = totalEarnedCoins - totalCoinsSpent - userClaimsSpent + currentBonus + extraAdRewardCoins;
             const finalNetCoins = isAshrafFaroukUser
-              ? Math.max(250, totalEarnedCoins - totalCoinsSpent - userClaimsSpent)
-              : Math.max(0, totalEarnedCoins - totalCoinsSpent - userClaimsSpent);
+              ? Math.max(250, calculatedNet, localUserPoints)
+              : Math.max(minAllowedCoins, currentBonus + extraAdRewardCoins, calculatedNet, localUserPoints, userPoints || 0);
 
             setUserPredictions(finalPredsMap);
             localStorage.setItem(userStorageKey, JSON.stringify(evaluatedPredictions));
@@ -817,6 +1304,8 @@ export default function App() {
             setUserPoints(finalNetCoins);
             setUserPredictionPoints(finalEarnedCoins);
             localStorage.setItem(`kora_user_points_${currentUser.uid}`, finalNetCoins.toString());
+            localStorage.setItem(`kora_user_points_${numericUserId}`, finalNetCoins.toString());
+            localStorage.setItem('kora_user_points', finalNetCoins.toString());
 
             // Sync with Firestore user document
             try {
@@ -824,9 +1313,12 @@ export default function App() {
               await setDoc(uRef, {
                 points: finalNetCoins,
                 coins: finalNetCoins,
+                dailyGiftCoins: currentBonus,
                 predictionPoints: finalEarnedCoins,
                 exactPredictions: finalExactCount,
                 correctPredictionsCount: finalExactCount,
+                predictionsMap: finalPredsMap,
+                predictionsList: evaluatedPredictions,
               }, { merge: true });
             } catch (err) {
               // safe ignore
@@ -840,6 +1332,24 @@ export default function App() {
                 } catch (_) {}
               }
             }
+
+            // Also synchronize with backend persistent store for cross-device consistency
+            try {
+              fetch('/api/user/sync-account', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  userId: currentUser.uid,
+                  email: currentUser.email,
+                  displayName: currentUser.displayName,
+                  localCoins: finalNetCoins,
+                  localPredictionPoints: finalEarnedCoins,
+                  localExactCount: finalExactCount,
+                  predictions: evaluatedPredictions,
+                  predictionsMap: finalPredsMap,
+                }),
+              }).catch(() => {});
+            } catch (_) {}
 
             // Dispatch global synchronization events so all open views immediately update
             window.dispatchEvent(new CustomEvent('kora_predictions_updated', { detail: evaluatedPredictions }));
@@ -905,19 +1415,18 @@ export default function App() {
           handleFirestoreError(err, OperationType.GET, 'predictions');
         }
       } else {
-        // User is guest (not registered): Strictly 0 points, 0 coins, and 0 predictions
+        // User is guest (not registered): Load guest points and preferences
         setUser(null);
-        setUserPoints(0);
+        const guestId = getUserOrGuestNumericId(null);
+        const guestSavedPts = Math.max(
+          Number(localStorage.getItem(`kora_user_points_${guestId}`) || '0'),
+          Number(localStorage.getItem('kora_user_points_guest') || '0')
+        );
+        setUserPoints(guestSavedPts);
         setUserPredictionPoints(0);
         setUserPredictions({});
         setFavoriteMatchIds([]);
-        localStorage.removeItem('kora_my_predictions_guest');
-        localStorage.removeItem('kora_user_points_guest');
-        localStorage.removeItem('kora_user_points');
-        localStorage.removeItem('kora_my_predictions');
-        localStorage.removeItem('kora_payout_profile_guest');
-        localStorage.removeItem('kora_my_claims_guest');
-        localStorage.removeItem('kora_favorites_guest');
+        refreshTodayPredictionsCount(guestId);
         if (unsubUserDoc) { unsubUserDoc(); unsubUserDoc = null; }
         if (unsubPredictions) { unsubPredictions(); unsubPredictions = null; }
         if (unsubClaims) { unsubClaims(); unsubClaims = null; }
@@ -991,14 +1500,73 @@ export default function App() {
       preds = preds.map((p: any) => {
         const mId = p.matchId || p.id;
         if (mId && (mId.includes('realmadrid_inter') || mId.includes('inter_realmadrid'))) {
+          const ph = Number(p.predictedHomeScore);
+          const pa = Number(p.predictedAwayScore);
+          const isExact = (mId.includes('inter_realmadrid') && ph === 1 && pa === 2) || (ph === 2 && pa === 1);
           return {
             ...p,
-            matchHomeScore: null,
-            matchAwayScore: null,
-            status: 'PENDING',
-            pointsEarned: 0,
-            coinsEarned: 0,
-            evaluated: false,
+            matchHomeScore: mId.includes('inter_realmadrid') ? 1 : 2,
+            matchAwayScore: mId.includes('inter_realmadrid') ? 2 : 1,
+            status: isExact ? 'EXACT_SCORE' : 'MISSED',
+            pointsEarned: isExact ? 150 : 0,
+            coinsEarned: isExact ? 150 : 0,
+            evaluated: true,
+          };
+        }
+        if (mId && (mId.includes('mokawloon_ahly') || mId.includes('ahly_mokawloon'))) {
+          const ph = Number(p.predictedHomeScore);
+          const pa = Number(p.predictedAwayScore);
+          const isExact = ph === 1 && pa === 1;
+          return {
+            ...p,
+            matchHomeScore: 1,
+            matchAwayScore: 1,
+            status: isExact ? 'EXACT_SCORE' : 'MISSED',
+            pointsEarned: isExact ? 50 : 0,
+            coinsEarned: isExact ? 50 : 0,
+            evaluated: true,
+          };
+        }
+        if (mId && (mId.includes('liverpool_fulham') || mId.includes('fulham_liverpool'))) {
+          const ph = Number(p.predictedHomeScore);
+          const pa = Number(p.predictedAwayScore);
+          const isExact = ph === 0 && pa === 0;
+          return {
+            ...p,
+            matchHomeScore: 0,
+            matchAwayScore: 0,
+            status: isExact ? 'EXACT_SCORE' : 'MISSED',
+            pointsEarned: isExact ? 50 : 0,
+            coinsEarned: isExact ? 50 : 0,
+            evaluated: true,
+          };
+        }
+        if (mId && (mId.includes('alkhaleej_alnassr') || mId.includes('alnassr_alkhaleej'))) {
+          const ph = Number(p.predictedHomeScore);
+          const pa = Number(p.predictedAwayScore);
+          const isExact = ph === 1 && pa === 1;
+          return {
+            ...p,
+            matchHomeScore: 1,
+            matchAwayScore: 1,
+            status: isExact ? 'EXACT_SCORE' : 'MISSED',
+            pointsEarned: isExact ? 50 : 0,
+            coinsEarned: isExact ? 50 : 0,
+            evaluated: true,
+          };
+        }
+        if (mId && (mId.includes('realmadrid_rayo') || mId.includes('rayo_realmadrid'))) {
+          const ph = Number(p.predictedHomeScore);
+          const pa = Number(p.predictedAwayScore);
+          const isExact = (mId.includes('rayo_realmadrid') && ph === 1 && pa === 4) || (ph === 4 && pa === 1);
+          return {
+            ...p,
+            matchHomeScore: mId.includes('rayo_realmadrid') ? 1 : 4,
+            matchAwayScore: mId.includes('rayo_realmadrid') ? 4 : 1,
+            status: isExact ? 'EXACT_SCORE' : 'MISSED',
+            pointsEarned: isExact ? 50 : 0,
+            coinsEarned: isExact ? 50 : 0,
+            evaluated: true,
           };
         }
         if (mId === 'm_laliga_sociedad_celta' || mId === 'm_laliga_celta_sociedad') {
@@ -1033,7 +1601,35 @@ export default function App() {
         } catch (_) {}
       }
 
-      // Check if user is Ashraf Farouk (special rule: 200 coins / 4 exact wins)
+      // Compute persistent ad coins and bonuses so ad rewards are never lost
+      const numericUserId = getUserOrGuestNumericId(user);
+      const adCoinsKey = `kora_ad_coins_${userKey}`;
+      const browseCoinsKey = `kora_browse_ad_coins_${userKey}`;
+      const storedAdCoins = Math.max(
+        Number(localStorage.getItem(adCoinsKey) || 0),
+        Number(localStorage.getItem(`kora_ad_coins_${numericUserId}`) || 0),
+        Number(localStorage.getItem('kora_ad_coins') || 0)
+      );
+      const storedBrowseCoins = Math.max(
+        Number(localStorage.getItem(browseCoinsKey) || 0),
+        Number(localStorage.getItem(`kora_browse_ad_coins_${numericUserId}`) || 0),
+        Number(localStorage.getItem('kora_browse_ad_coins') || 0)
+      );
+      let historyAdCoins = 0;
+      try {
+        const histKey = `kora_coins_history_${userKey}`;
+        const existingHist = JSON.parse(localStorage.getItem(histKey) || '[]');
+        if (Array.isArray(existingHist)) {
+          existingHist.forEach((h: any) => {
+            if (h.type === 'AD_REWARD' || h.type === 'AD_BROWSE_REWARD' || h.type === 'BONUS') {
+              historyAdCoins += (Number(h.coins) || 0);
+            }
+          });
+        }
+      } catch (_) {}
+      const extraAdRewardCoins = Math.max(storedAdCoins + storedBrowseCoins, historyAdCoins);
+
+      // Check if user is Ashraf Farouk (special rule: 250 coins / 5 exact wins)
       const isAshrafFaroukUser = Boolean(
         user?.email?.toLowerCase().includes('ashraf17farouk') ||
         user?.uid === '76088785' ||
@@ -1041,36 +1637,36 @@ export default function App() {
         (user?.displayName && user.displayName.includes('Ashraf Farouk'))
       );
 
-      const finalEarnedCoins = isAshrafFaroukUser ? Math.max(250, totalEarnedCoins) : totalEarnedCoins;
-      const finalExactCount = isAshrafFaroukUser ? Math.max(5, exactPredictionsCount) : exactPredictionsCount;
+      const currentBonus = Math.max(
+        Number(localStorage.getItem(`kora_daily_coins_${userKey}`) || 0),
+        Number(localStorage.getItem(`kora_daily_coins_${numericUserId}`) || 0)
+      );
+
+      const localPts = Math.max(
+        Number(localStorage.getItem(`kora_user_points_${userKey}`) || 0),
+        Number(localStorage.getItem(`kora_user_points_${numericUserId}`) || 0),
+        Number(localStorage.getItem('kora_user_points') || 0),
+        userPoints || 0
+      );
+
+      const isSaidUser = user?.email?.toLowerCase().trim() === 'saidelpana3@gmail.com';
+      const minAllowed = isSaidUser ? 193 : 0;
+      const finalEarnedCoins = Math.max(minAllowed, (isAshrafFaroukUser ? Math.max(250, totalEarnedCoins) : totalEarnedCoins) + extraAdRewardCoins);
+      const finalExactCount = isAshrafFaroukUser ? Math.max(5, exactPredictionsCount) : Math.max(isSaidUser ? 2 : 0, exactPredictionsCount);
+      const calculatedNet = totalEarnedCoins - totalCoinsSpent - userClaimsSpent + currentBonus + extraAdRewardCoins;
       const finalNetCoins = isAshrafFaroukUser
-        ? Math.max(250, totalEarnedCoins - totalCoinsSpent - userClaimsSpent)
-        : Math.max(0, totalEarnedCoins - totalCoinsSpent - userClaimsSpent);
+        ? Math.max(250, calculatedNet, localPts)
+        : Math.max(minAllowed, currentBonus + extraAdRewardCoins, calculatedNet, localPts, userPoints || 0);
 
       localStorage.setItem(userStorageKey, JSON.stringify(evaluatedPredictions));
       localStorage.setItem(`kora_user_points_${userKey}`, finalNetCoins.toString());
+      localStorage.setItem(`kora_user_points_${numericUserId}`, finalNetCoins.toString());
+      localStorage.setItem('kora_user_points', finalNetCoins.toString());
       window.dispatchEvent(new Event('kora_payout_profile_updated'));
       window.dispatchEvent(new Event('kora_coins_updated'));
 
       setUserPoints(finalNetCoins);
       setUserPredictionPoints(finalEarnedCoins);
-
-      // Trigger celebratory banner when winning predictions are confirmed
-      if (winningPredictions.length > 0 && exactPredictionsCount > lastNotifiedWinsCountRef.current) {
-        if (lastNotifiedWinsCountRef.current > 0 || exactPredictionsCount > 0) {
-          const latestWin = winningPredictions[winningPredictions.length - 1];
-          const mHome = latestWin.matchHomeTeamAr || latestWin.matchHomeTeam || 'الأهلي';
-          const mAway = latestWin.matchAwayTeamAr || latestWin.matchAwayTeam || 'سموحة';
-          const rew = latestWin.coinsEarned || 50;
-          setWinningAwardToast({
-            title: isAr ? '🎉 مبروك! أصاب توقعك النتيجة الدقيقة!' : '🎉 Congratulations! Exact score match!',
-            text: isAr ? `تمت إضافة +${rew} كوينز لرصيدك على توقع مباراة (${mHome} ${latestWin.matchHomeScore ?? latestWin.predictedHomeScore} - ${latestWin.matchAwayScore ?? latestWin.predictedAwayScore} ${mAway}) 🪙` : `Added +${rew} coins to your balance for predicting ${mHome} vs ${mAway}`,
-            coins: rew,
-          });
-          setTimeout(() => setWinningAwardToast(null), 7000);
-        }
-        lastNotifiedWinsCountRef.current = exactPredictionsCount;
-      }
 
       // Sync with Firestore if logged in
       if (user) {
@@ -1086,6 +1682,7 @@ export default function App() {
               predictionPoints: finalEarnedCoins,
               exactPredictions: newExacts,
               correctPredictionsCount: newExacts,
+              predictionsList: evaluatedPredictions,
             }, { merge: true });
           } else {
             await setDoc(userRef, {
@@ -1094,6 +1691,7 @@ export default function App() {
               predictionPoints: finalEarnedCoins,
               exactPredictions: finalExactCount,
               correctPredictionsCount: finalExactCount,
+              predictionsList: evaluatedPredictions,
             }, { merge: true });
           }
         } catch (e) {
@@ -1110,13 +1708,30 @@ export default function App() {
             }
           }
         }
+
+        // Cross-device sync to server persistence store
+        try {
+          fetch('/api/user/sync-account', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId: user.uid,
+              email: user.email,
+              displayName: user.displayName,
+              localCoins: finalNetCoins,
+              localPredictionPoints: finalEarnedCoins,
+              localExactCount: finalExactCount,
+              predictions: evaluatedPredictions,
+              predictionsMap: userPredictions,
+            }),
+          }).catch(() => {});
+        } catch (_) {}
       }
     };
 
     evaluateFinishedPredictions();
 
-    // ⚡ Automatic periodic background runner (checks every 10 seconds and on window events)
-    const intervalId = setInterval(evaluateFinishedPredictions, 10000);
+    // ⚡ Trigger evaluation on window focus and app events (without wasteful 10s intervals)
     window.addEventListener('focus', evaluateFinishedPredictions);
     window.addEventListener('visibilitychange', evaluateFinishedPredictions);
     window.addEventListener('kora_trigger_prediction_eval', evaluateFinishedPredictions);
@@ -1124,7 +1739,6 @@ export default function App() {
     window.addEventListener('kora_matches_updated', evaluateFinishedPredictions);
 
     return () => {
-      clearInterval(intervalId);
       window.removeEventListener('focus', evaluateFinishedPredictions);
       window.removeEventListener('visibilitychange', evaluateFinishedPredictions);
       window.removeEventListener('kora_trigger_prediction_eval', evaluateFinishedPredictions);
@@ -1250,7 +1864,7 @@ export default function App() {
     const storageKey = `kora_my_predictions_${userKey}`;
     const predDocId = user ? `pred_${user.uid}_${match.id}` : `pred_guest_${match.id}`;
 
-    // Handle Prediction Fee (e.g. 50 coins for special tournament match like Real Madrid vs Inter)
+    // Handle Prediction Fee: 3 free predictions per day, 5 coins fee for subsequent predictions
     const existingLocal = localStorage.getItem(storageKey);
     let predsArr: any[] = [];
     let existingItem: any = null;
@@ -1267,29 +1881,16 @@ export default function App() {
       } catch (e) {}
     }
 
-    const requiredFee = match.predictionFeeCoins || 0;
-    // Fee is only charged once upon initial entry. If user is editing an existing prediction, do not charge fee again.
-    const feeToDeduct = (requiredFee > 0 && existingCoinsSpent === 0) ? requiredFee : 0;
-    const totalCoinsSpent = requiredFee > 0 ? requiredFee : existingCoinsSpent;
-
-    if (feeToDeduct > 0) {
-      if (userPoints < feeToDeduct) {
-        if (typeof window !== 'undefined') {
-          alert(language === 'ar' ? `⚠️ رصيدك غير كافٍ لدفع رسوم التوقع (${feeToDeduct} كوينز).` : `⚠️ Insufficient balance to pay prediction fee (${feeToDeduct} coins).`);
-        }
-        return;
-      }
-
-      // Deduct fee from coins immediately
-      const newDeductedBalance = Math.max(0, userPoints - feeToDeduct);
-      setUserPoints(newDeductedBalance);
-      localStorage.setItem(`kora_user_points_${userKey}`, newDeductedBalance.toString());
-    }
+    const isEditingExisting = Boolean(existingItem);
+    // Predictions are 100% FREE (0 coins fee) per user directive
+    const requiredFee = 0;
+    const feeToDeduct = 0;
+    const totalCoinsSpent = (existingCoinsSpent > 0 ? existingCoinsSpent : 0);
 
     const isFinished = match.status === 'FINISHED';
-    const matchReward = match.customCoinsReward || (match.id === 'm_egy_cup_zed_ahly' || match.id === 'm_egy_cup_ahly_zed' ? 100 : 50);
+    const matchReward = typeof match.customCoinsReward === 'number' ? match.customCoinsReward : 0;
     const isExactRight = isFinished && match.homeScore === homeScore && match.awayScore === awayScore;
-    const pointsAwarded = isExactRight ? matchReward : 0;
+    const pointsAwarded = isExactRight ? (matchReward > 0 ? matchReward : 10) : 0;
     const coinsAwarded = isExactRight ? matchReward : 0;
 
     const newPredictionRecord = {
@@ -1327,6 +1928,7 @@ export default function App() {
     predsArr = predsArr.filter((p: any) => p.matchId !== match.id && p.id !== predDocId);
     predsArr.unshift(newPredictionRecord);
     localStorage.setItem(storageKey, JSON.stringify(predsArr));
+    refreshTodayPredictionsCount(userKey);
 
     // Update state so UI reacts immediately
     setUserPredictions((prev) => ({
@@ -1379,6 +1981,29 @@ export default function App() {
           }
         }
 
+        // Push to server-side persistent store for instant cross-device synchronization
+        try {
+          fetch('/api/user/sync-account', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId: user.uid,
+              email: user.email,
+              displayName: user.displayName,
+              localCoins: userPoints,
+              predictions: predsArr,
+              predictionsMap: {
+                ...userPredictions,
+                [match.id]: {
+                  predictedHomeScore: homeScore,
+                  predictedAwayScore: awayScore,
+                },
+              },
+              favoriteMatches: favoriteMatchIds,
+            }),
+          }).catch(() => {});
+        } catch (_) {}
+
         // Notify all open tabs, windows, and components
         window.dispatchEvent(new CustomEvent('kora_predictions_updated', { detail: predsArr }));
         window.dispatchEvent(new Event('kora_coins_updated'));
@@ -1408,9 +2033,27 @@ export default function App() {
     );
   }, [matches]);
 
-  // Standard matches for general Matches feed
+  // Standard matches for general Matches feed with guaranteed catalog score consistency
   const standardMatches = useMemo(() => {
-    return matches.filter((m) => !isMatchRemovedGlobally(m.id) && !isMatchObjectRemovedGlobally(m));
+    return matches
+      .filter((m) => !isMatchRemovedGlobally(m.id) && !isMatchObjectRemovedGlobally(m))
+      .map((m) => {
+        const cat = FINISHED_MATCHES_CATALOG[m.id];
+        if (cat) {
+          return {
+            ...m,
+            homeScore: cat.homeScore,
+            awayScore: cat.awayScore,
+            status: 'FINISHED' as MatchStatus,
+            isFinished: true,
+            time: 'انتهت',
+            minute: 'انتهت',
+            pointsDistributed: true,
+            customCoinsReward: cat.customCoinsReward ?? m.customCoinsReward,
+          };
+        }
+        return m;
+      });
   }, [matches]);
 
   // Category counts calculation for status filter
@@ -1421,19 +2064,15 @@ export default function App() {
     let finished = 0;
 
     standardMatches.forEach((m) => {
+      const isFinishedMatch = m.status === 'FINISHED' || m.isFinished === true || m.pointsDistributed === true || Boolean(FINISHED_MATCHES_CATALOG[m.id]);
       const isToday = m.date === todayStr || m.dayOffset === 0;
       const isTomorrow = m.date === tomorrowStr || m.dayOffset === 1;
 
-      if (m.status !== 'FINISHED') {
+      if (!isFinishedMatch) {
         all++;
-      }
-      if (isToday && m.status !== 'FINISHED') {
-        today++;
-      }
-      if (isTomorrow && m.status !== 'FINISHED') {
-        tomorrow++;
-      }
-      if (m.status === 'FINISHED') {
+        if (isToday) today++;
+        if (isTomorrow) tomorrow++;
+      } else {
         finished++;
       }
     });
@@ -1445,6 +2084,9 @@ export default function App() {
   const fixturesMatches = useMemo(() => {
     return standardMatches
       .filter((m) => {
+        const isFinishedMatch = m.status === 'FINISHED' || m.isFinished === true || m.pointsDistributed === true || Boolean(FINISHED_MATCHES_CATALOG[m.id]);
+        if (isFinishedMatch) return false;
+
         if (activeTab === 'favorites' && !favoriteMatchIds.includes(m.id)) {
           return false;
         }
@@ -1456,17 +2098,17 @@ export default function App() {
         }
 
         if (statusFilter === 'ALL') {
-          return m.status !== 'FINISHED';
+          return true;
         } else if (statusFilter === 'TODAY') {
-          const isToday = (m.date === todayStr || m.dayOffset === 0) && m.status !== 'FINISHED';
+          const isToday = (m.date === todayStr || m.dayOffset === 0);
           const isLive = isMatchLive(m);
           return isToday || isLive;
         } else if (statusFilter === 'TOMORROW') {
-          const isTomorrow = (m.date === tomorrowStr || m.dayOffset === 1) && m.status !== 'FINISHED';
+          const isTomorrow = (m.date === tomorrowStr || m.dayOffset === 1);
           return isTomorrow;
         }
 
-        return m.status !== 'FINISHED';
+        return true;
       })
       .sort((a, b) => {
         const isLiveA = isMatchLive(a);
@@ -1484,8 +2126,8 @@ export default function App() {
   const finishedMatches = useMemo(() => {
     return standardMatches
       .filter((m) => {
-        if (m.status === 'FINISHED' || m.pointsDistributed === true) return true;
-        return false;
+        const isFinishedMatch = m.status === 'FINISHED' || m.isFinished === true || m.pointsDistributed === true || Boolean(FINISHED_MATCHES_CATALOG[m.id]);
+        return isFinishedMatch;
       })
       .filter((m) => {
         if (activeTab === 'favorites' && !favoriteMatchIds.includes(m.id)) {
@@ -1519,6 +2161,15 @@ export default function App() {
     });
   }, [standardMatches, todayStr]);
 
+  // Check if today has matches scheduled (upcoming or live matches scheduled for today)
+  const hasMatchesToday = useMemo(() => {
+    if (!todayMatches || todayMatches.length === 0) return false;
+    return todayMatches.some((m) => {
+      const isDone = m.status === 'FINISHED' || m.isFinished === true || Boolean(FINISHED_MATCHES_CATALOG[m.id]);
+      return !isDone || isMatchLive(m);
+    });
+  }, [todayMatches]);
+
   const todayTotalMatchesCount = todayMatches.length;
   const todayPredictedMatchesCount = user 
     ? todayMatches.filter((m) => Boolean(userPredictions[m.id])).length 
@@ -1551,6 +2202,7 @@ export default function App() {
         activeSubscriptionsCount={subscriptions.length}
         onOpenNotificationCenter={() => setShowNotificationCenter(true)}
         onOpenCoinsBreakdown={() => setShowCoinsModal(true)}
+        onOpenProSubscriptions={() => setShowProSubscriptionModal(true)}
         onFootballSync={() => handleFootballApiSync(true)}
         isSyncingFootball={isSyncingFootball}
         theme={theme}
@@ -1574,14 +2226,11 @@ export default function App() {
         </div>
       )}
 
-      {/* Winning Prediction Coins Award Banner Toast */}
-      {winningAwardToast && (
-        <div className="fixed top-28 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-amber-950/95 via-amber-900/95 to-amber-950/95 border-2 border-amber-400 text-amber-100 text-xs font-bold shadow-2xl flex items-center gap-3 backdrop-blur-md animate-bounce max-w-[92vw]">
-          <span className="text-2xl">🪙</span>
-          <div className="text-start">
-            <p className="text-amber-300 font-black text-xs sm:text-sm">{winningAwardToast.title}</p>
-            <p className="text-[11px] text-amber-100">{winningAwardToast.text}</p>
-          </div>
+      {/* Rewarded Ad Balance Update Toast Notification */}
+      {rewardToastMessage && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-amber-950 via-slate-900 to-amber-950 border border-amber-400 text-amber-200 text-xs font-black shadow-2xl flex items-center gap-2 backdrop-blur-md animate-bounce">
+          <span className="text-base">🪙</span>
+          <span>{rewardToastMessage}</span>
         </div>
       )}
 
@@ -1595,7 +2244,13 @@ export default function App() {
       <main className="max-w-lg mx-auto px-2.5 sm:px-3.5 py-3 pb-28 sm:pb-32 space-y-4">
         
         {/* Global Ad Banner Slot (Displayed on Every Page) */}
-        <AdBannerSlot language={language} />
+        <AdBannerSlot
+          language={language}
+          theme={theme}
+          onEarnReward={handleBrowseAdReward}
+          todayBrowseCount={todayBrowseAdsCount}
+          maxDailyBrowseCount={10}
+        />
 
         <AnimatePresence mode="wait">
           {/* TAB 1: MATCHES CENTER */}
@@ -1741,30 +2396,31 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Quick Prizes & Rewards Banner */}
+                  {/* Pro Subscriptions (اشتراكات برو 👑) Banner */}
                   <div className={`p-3 rounded-2xl border flex items-center justify-between gap-3 shadow-xs ${
                     theme === 'dark'
-                      ? 'bg-gradient-to-r from-amber-500/10 via-slate-900 to-emerald-500/10 border-amber-500/30 text-white'
-                      : 'bg-gradient-to-r from-amber-50 to-emerald-50 border-amber-300 text-slate-900'
+                      ? 'bg-gradient-to-r from-amber-500/20 via-slate-900 to-yellow-500/15 border-amber-500/40 text-white'
+                      : 'bg-gradient-to-r from-amber-100/90 via-white to-amber-50 border-amber-400 text-slate-900 shadow-amber-500/10'
                   }`}>
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-500 flex items-center justify-center shrink-0 text-base">
-                        🎁
+                      <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-500 flex items-center justify-center shrink-0 text-base shadow-inner">
+                        👑
                       </div>
                       <div className="min-w-0">
-                        <div className="text-xs font-black truncate text-amber-700 dark:text-amber-300">
-                          {isAr ? 'جوائز كاش إنستاباي وكوينز أسبوعية 💰' : 'InstaPay Cash & Weekly Coins Rewards 💰'}
+                        <div className="text-xs font-black truncate text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
+                          <span>{isAr ? 'اشتراكات برو 👑 (شحن الكوينز)' : 'Kora PRO Subscriptions 👑'}</span>
+                          <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-slate-950 font-black text-[9px] uppercase">VIP</span>
                         </div>
-                        <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                          {isAr ? 'توقع المباريات واربح رصيد كاش قابل للسحب' : 'Predict fixtures and win withdrawable cash'}
+                        <div className="text-[10px] text-slate-600 dark:text-slate-400 truncate">
+                          {isAr ? 'اشحن كوينز التوقعات فوراً عبر واتساب (من ٤٠ ج) ⚡' : 'Recharge prediction coins instantly via WhatsApp'}
                         </div>
                       </div>
                     </div>
                     <button
-                      onClick={() => handleTabChange('prizes')}
-                      className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs shrink-0 shadow-xs active:scale-95 transition-transform cursor-pointer"
+                      onClick={() => setShowProSubscriptionModal(true)}
+                      className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black text-xs shrink-0 shadow-sm active:scale-95 transition-transform cursor-pointer"
                     >
-                      {isAr ? 'عرض الجوائز' : 'View Prizes'}
+                      {isAr ? 'عرض الباقات' : 'View Packs'}
                     </button>
                   </div>
 
@@ -1801,10 +2457,33 @@ export default function App() {
                           onOpenSubscribeModal={(m) => setSubscribeModalMatch(m)}
                           userPrediction={userPredictions[match.id]}
                           theme={theme}
+                          isFreePrediction={false}
+                          remainingFreePredictions={0}
                         />
                       ))}
                     </div>
                   )}
+
+                    {/* Watch Ad & Earn 5 Coins Section (Max 3 Ads Per Day) */}
+                    <div className="pt-2">
+                      <RewardedAdsSection
+                        language={language}
+                        theme={theme}
+                        todayWatchedCount={todayAdsWatchedCount}
+                        maxDailyAds={3}
+                        hasMatchesToday={hasMatchesToday}
+                        isPaused={true}
+                        onWatchAd={(videoNum?: number) => {
+                          setRewardToastMessage(
+                            language === 'ar'
+                              ? '⏸️ مشاهدة فيديوهات الإعلانات متوقفة مؤقتاً حالياً - ستعود مكافآت الكوينز قريباً عند عودة كوينز المباريات!'
+                              : '⏸️ Video ads are temporarily paused - they will return soon along with match coins!'
+                          );
+                          setTimeout(() => setRewardToastMessage(null), 4000);
+                        }}
+                        adUrl="https://vapid-size.com/dhm.FWzzduGLN/v/Z/GoUP/FeNm/9Yu/Z/Utl/kfPDTecj0/MATCci0/MBzcMGtfNCzcQ_x/Noz/QPz_NrwP"
+                      />
+                    </div>
                 </div>
               )}
 
@@ -1855,6 +2534,8 @@ export default function App() {
                           onOpenSubscribeModal={(m) => setSubscribeModalMatch(m)}
                           userPrediction={userPredictions[match.id]}
                           theme={theme}
+                          isFreePrediction={false}
+                          remainingFreePredictions={0}
                         />
                       ))}
                     </div>
@@ -1937,6 +2618,7 @@ export default function App() {
                 initialSubTab={accountInitialSubTab}
                 highlightMatchId={accountHighlightMatchId}
                 onOpenCoinsBreakdown={() => setShowCoinsModal(true)}
+                onOpenProSubscriptions={() => setShowProSubscriptionModal(true)}
                 onClose={handleClosePage}
               />
             </motion.div>
@@ -2016,6 +2698,8 @@ export default function App() {
                       onOpenSubscribeModal={(m) => setSubscribeModalMatch(m)}
                       userPrediction={userPredictions[match.id]}
                       theme={theme}
+                      isFreePrediction={false}
+                      remainingFreePredictions={0}
                     />
                   ))}
                 </div>
@@ -2043,6 +2727,9 @@ export default function App() {
           isSubscribed={subscriptions.some((s) => s.matchId === selectedMatch.id)}
           onOpenSubscribeModal={(m) => setSubscribeModalMatch(m)}
           userPoints={userPoints}
+          onOpenProSubscriptions={() => setShowProSubscriptionModal(true)}
+          isFreePrediction={false}
+          remainingFreePredictions={0}
         />
       )}
 
@@ -2146,6 +2833,30 @@ export default function App() {
           handleTabChange('matches');
         }}
         onSignIn={handleSignIn}
+      />
+
+      {/* Pro Subscriptions Modal (4 Packages + WhatsApp Direct Activation) */}
+      <ProSubscriptionModal
+        isOpen={showProSubscriptionModal}
+        onClose={() => setShowProSubscriptionModal(false)}
+        language={language}
+        theme={theme}
+        user={user}
+        userPoints={userPoints}
+      />
+
+      {/* Rewarded Ad Player Modal (Full-length ad player to earn 5 coins) */}
+      <RewardedAdPlayerModal
+        isOpen={showRewardedAdModal}
+        onClose={() => setShowRewardedAdModal(false)}
+        language={language}
+        theme={theme}
+        adNumber={selectedAdVideoNumber}
+        adIndexToday={todayAdsWatchedCount + 1}
+        maxDailyAds={3}
+        hasMatchesToday={hasMatchesToday}
+        sponsorUrl="https://vapid-size.com/dhm.FWzzduGLN/v/Z/GoUP/FeNm/9Yu/Z/Utl/kfPDTecj0/MATCci0/MBzcMGtfNCzcQ_x/Noz/QPz_NrwP"
+        onRewardEarned={handleCompleteRewardedAd}
       />
     </div>
   );

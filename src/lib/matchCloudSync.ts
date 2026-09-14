@@ -66,22 +66,67 @@ export function mergeCloudMatches(
     (m) => !isMatchRemovedGlobally(m.id) && !isMatchObjectRemovedGlobally(m)
   );
 
-  if (!cloudMap || Object.keys(cloudMap).length === 0) {
-    return filteredLocal;
-  }
+  return filteredLocal.map((match) => {
+    const cloudData = cloudMap ? cloudMap[match.id] : undefined;
+    const catalogEntry = FINISHED_MATCHES_CATALOG[match.id];
 
-  const merged = filteredLocal.map((match) => {
-    // Scheduled upcoming matches must strictly remain UPCOMING with 0-0 score
-    if (KNOWN_UPCOMING_MATCH_IDS.has(match.id) || (match.status === 'UPCOMING' && !match.isFinished)) {
-      const cloudData = cloudMap[match.id];
-      // Only accept cloud data if it is explicitly UPCOMING or a valid active LIVE match with in-progress scores
-      if (cloudData && (cloudData.status === 'LIVE' || cloudData.status === 'HALF_TIME')) {
-        return {
-          ...match,
-          ...cloudData,
-          status: cloudData.status as MatchStatus,
-        };
-      }
+    // Priority 1: If catalog entry exists, it is permanently FINISHED with exact score
+    if (catalogEntry) {
+      return {
+        ...match,
+        ...(cloudData || {}),
+        homeScore: catalogEntry.homeScore,
+        awayScore: catalogEntry.awayScore,
+        status: 'FINISHED' as MatchStatus,
+        isFinished: true,
+        time: 'انتهت',
+        minute: 'انتهت',
+        pointsDistributed: true,
+        customCoinsReward: catalogEntry.customCoinsReward ?? match.customCoinsReward,
+      };
+    }
+
+    // Priority 2: If cloud data marks the match as finished, lock it as FINISHED
+    if (cloudData && (cloudData.status === 'FINISHED' || cloudData.isFinished === true || cloudData.time === 'انتهت' || cloudData.minute === 'انتهت')) {
+      return {
+        ...match,
+        ...cloudData,
+        homeScore: typeof cloudData.homeScore === 'number' ? cloudData.homeScore : match.homeScore,
+        awayScore: typeof cloudData.awayScore === 'number' ? cloudData.awayScore : match.awayScore,
+        status: 'FINISHED' as MatchStatus,
+        isFinished: true,
+        time: 'انتهت',
+        minute: 'انتهت',
+        pointsDistributed: true,
+      };
+    }
+
+    // Priority 3: If local match itself is already finished, preserve it as FINISHED
+    if (match.status === 'FINISHED' || match.isFinished === true || match.pointsDistributed === true) {
+      return {
+        ...match,
+        ...(cloudData || {}),
+        homeScore: typeof cloudData?.homeScore === 'number' ? cloudData.homeScore : match.homeScore,
+        awayScore: typeof cloudData?.awayScore === 'number' ? cloudData.awayScore : match.awayScore,
+        status: 'FINISHED' as MatchStatus,
+        isFinished: true,
+        time: 'انتهت',
+        minute: 'انتهت',
+        pointsDistributed: true,
+      };
+    }
+
+    // Priority 4: If cloud data indicates LIVE or HALF_TIME
+    if (cloudData && (cloudData.status === 'LIVE' || cloudData.status === 'HALF_TIME')) {
+      return {
+        ...match,
+        ...cloudData,
+        status: cloudData.status as MatchStatus,
+      };
+    }
+
+    // Priority 5: Known unplayed upcoming match
+    if (KNOWN_UPCOMING_MATCH_IDS.has(match.id)) {
       return {
         ...match,
         homeScore: 0,
@@ -94,62 +139,16 @@ export function mergeCloudMatches(
       };
     }
 
-    const cloudData = cloudMap[match.id];
-    const catalogEntry = FINISHED_MATCHES_CATALOG[match.id];
-
-    if (!cloudData && !catalogEntry) {
-      return match;
-    }
-
-    // If cloud explicitly states the match is UPCOMING or not finished
-    if (cloudData?.status === 'UPCOMING' || cloudData?.isFinished === false) {
+    // Priority 6: Merge any other cloud updates
+    if (cloudData) {
       return {
         ...match,
         ...cloudData,
-        homeScore: 0,
-        awayScore: 0,
-        status: 'UPCOMING' as MatchStatus,
-        isFinished: false,
-        time: match.time || '22:00',
-        minute: '',
-        pointsDistributed: false,
       };
     }
 
-    const homeScore = cloudData?.homeScore !== undefined 
-      ? cloudData.homeScore 
-      : (catalogEntry?.homeScore !== undefined ? catalogEntry.homeScore : match.homeScore);
-
-    const awayScore = cloudData?.awayScore !== undefined 
-      ? cloudData.awayScore 
-      : (catalogEntry?.awayScore !== undefined ? catalogEntry.awayScore : match.awayScore);
-
-    const isFinished = cloudData?.isFinished || 
-      cloudData?.status === 'FINISHED' || 
-      match.status === 'FINISHED' || 
-      Boolean(catalogEntry);
-
-    const status: MatchStatus = isFinished 
-      ? 'FINISHED' 
-      : ((cloudData?.status as MatchStatus) || match.status);
-
-    const time = status === 'FINISHED' 
-      ? 'انتهت' 
-      : (cloudData?.time || match.time);
-
-    return {
-      ...match,
-      ...cloudData,
-      homeScore,
-      awayScore,
-      status,
-      isFinished,
-      time,
-      customCoinsReward: cloudData?.customCoinsReward || catalogEntry?.customCoinsReward || match.customCoinsReward || 50,
-    };
-  });
-
-  return merged as Match[];
+    return match;
+  }) as Match[];
 }
 
 /**

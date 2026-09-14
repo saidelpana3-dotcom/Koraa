@@ -658,3 +658,192 @@ export function formatEventsFromApiFootball(rawEvents: any[], homeTeamName: stri
     };
   });
 }
+
+/**
+ * Supported leagues for real-time live scoreboard fallback (UEFA, La Liga, Premier League, Serie A, etc.)
+ */
+const ESPN_SUPPORTED_LEAGUES = [
+  'uefa.champions',
+  'uefa.europa',
+  'esp.1',
+  'eng.1',
+  'ita.1',
+  'fra.1',
+  'ger.1',
+];
+
+let cachedEspnFixtures: { data: ApiFootballFixture[]; timestamp: number } | null = null;
+const ESPN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes (300 seconds)
+
+/**
+ * Fetch live soccer fixtures directly from real-time scores provider without authentication
+ */
+export async function fetchEspnLiveFixtures(targetDates?: string): Promise<ApiFootballFixture[]> {
+  if (!targetDates && cachedEspnFixtures && Date.now() - cachedEspnFixtures.timestamp < ESPN_CACHE_TTL) {
+    return cachedEspnFixtures.data;
+  }
+
+  const results: ApiFootballFixture[] = [];
+  const dateParam = targetDates ? `?dates=${targetDates}` : '';
+
+  const promises = ESPN_SUPPORTED_LEAGUES.map(async (league) => {
+    try {
+      const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/${league}/scoreboard${dateParam}`, {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(6000),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!Array.isArray(data.events)) return;
+
+      for (const ev of data.events) {
+        const comp = ev.competitions?.[0];
+        if (!comp) continue;
+        const homeComp = comp.competitors?.find((c: any) => c.homeAway === 'home');
+        const awayComp = comp.competitors?.find((c: any) => c.homeAway === 'away');
+        if (!homeComp || !awayComp) continue;
+
+        const homeName = homeComp.team?.name || '';
+        const awayName = awayComp.team?.name || '';
+        const homeScore = parseInt(homeComp.score ?? '0', 10);
+        const awayScore = parseInt(awayComp.score ?? '0', 10);
+        const rawStatus = ev.status?.type?.name || '';
+        const rawClock = ev.status?.displayClock || '';
+        const elapsed = parseInt(rawClock.replace(/[^0-9]/g, '') || '0', 10);
+
+        let shortStatus = 'NS';
+        if (rawStatus.includes('FINAL') || rawStatus.includes('FULL_TIME') || ev.status?.type?.detail === 'FT') {
+          shortStatus = 'FT';
+        } else if (rawStatus.includes('HALFTIME') || rawStatus.includes('HALF_TIME') || ev.status?.type?.detail === 'HT') {
+          shortStatus = 'HT';
+        } else if (rawStatus.includes('PROGRESS') || rawStatus.includes('IN_PROGRESS')) {
+          shortStatus = elapsed > 45 ? '2H' : '1H';
+        }
+
+        results.push({
+          fixture: {
+            id: Number(ev.id) || Math.floor(Math.random() * 900000) + 100000,
+            date: ev.date || new Date().toISOString(),
+            timestamp: ev.date ? Math.floor(new Date(ev.date).getTime() / 1000) : Math.floor(Date.now() / 1000),
+            status: {
+              long: ev.status?.type?.description || rawStatus,
+              short: shortStatus,
+              elapsed: elapsed || (shortStatus === 'FT' ? 90 : null),
+            },
+            venue: {
+              name: comp.venue?.fullName || '',
+              city: comp.venue?.address?.city || '',
+            },
+          },
+          league: {
+            id: 0,
+            name: data.leagues?.[0]?.name || league,
+            country: 'Europe',
+          },
+          teams: {
+            home: { id: Number(homeComp.id) || 1, name: homeName, logo: homeComp.team?.logo || '' },
+            away: { id: Number(awayComp.id) || 2, name: awayName, logo: awayComp.team?.logo || '' },
+          },
+          goals: {
+            home: isNaN(homeScore) ? 0 : homeScore,
+            away: isNaN(awayScore) ? 0 : awayScore,
+          },
+        });
+      }
+    } catch (_) {}
+  });
+
+  await Promise.allSettled(promises);
+
+  if (!targetDates) {
+    cachedEspnFixtures = {
+      data: results,
+      timestamp: Date.now(),
+    };
+  }
+
+  return results;
+}
+
+/**
+ * Fetch real match events (goals, cards, substitutions, minute by minute) for a specific match
+ */
+export async function fetchLiveMatchEvents(homeTeamName: string, awayTeamName: string): Promise<any[]> {
+  for (const league of ESPN_SUPPORTED_LEAGUES) {
+    try {
+      const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/${league}/scoreboard`, {
+        signal: AbortSignal.timeout(4000),
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (!Array.isArray(data.events)) continue;
+
+      const matchedEv = data.events.find((e: any) => {
+        const comp = e.competitions?.[0];
+        const h = comp?.competitors?.find((c: any) => c.homeAway === 'home')?.team?.name || '';
+        const a = comp?.competitors?.find((c: any) => c.homeAway === 'away')?.team?.name || '';
+        return (areTeamsMatching(h, homeTeamName) && areTeamsMatching(a, awayTeamName)) ||
+               (areTeamsMatching(h, awayTeamName) && areTeamsMatching(a, homeTeamName));
+      });
+
+      if (matchedEv) {
+        const summaryRes = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/${league}/summary?event=${matchedEv.id}`, {
+          signal: AbortSignal.timeout(4000),
+        });
+        if (!summaryRes.ok) continue;
+        const summaryData = await summaryRes.json();
+        const keyEvents = summaryData.keyEvents || [];
+
+        return keyEvents.map((ev: any, idx: number) => {
+          const text = ev.text || '';
+          const minute = parseInt(ev.clock?.displayValue?.replace(/[^0-9]/g, '') || '0', 10);
+          const isHome = areTeamsMatching(text, homeTeamName);
+          let type = 'GOAL';
+          if (text.toLowerCase().includes('goal')) {
+            type = text.toLowerCase().includes('penalty') ? 'PENALTY_GOAL' : text.toLowerCase().includes('own goal') ? 'OWN_GOAL' : 'GOAL';
+          } else if (text.toLowerCase().includes('red card')) {
+            type = 'RED_CARD';
+          } else if (text.toLowerCase().includes('yellow card')) {
+            type = 'YELLOW_CARD';
+          } else if (text.toLowerCase().includes('substitution')) {
+            type = 'SUBSTITUTION';
+          }
+
+          const rawPlayer = ev.participants?.[0]?.athlete?.displayName || text.split('(')[0]?.replace(/Goal!|Yellow Card|Red Card/i, '').trim();
+
+          return {
+            id: `ev_espn_${idx}_${minute}`,
+            minute: minute || 1,
+            type,
+            team: isHome ? 'HOME' : 'AWAY',
+            player: rawPlayer,
+            playerAr: rawPlayer,
+            playerName: rawPlayer,
+            playerNameAr: rawPlayer,
+            detail: text,
+            detailAr: text,
+          };
+        });
+      }
+    } catch (_) {}
+  }
+  return [];
+}
+
+/**
+ * Unified Live & Today Fixtures Engine (API-Football + Real-Time Live Sports Provider)
+ * Provides 100% resilient live scoreboards every 5 minutes
+ */
+export async function getAllLiveFixturesUnified(dateStr?: string): Promise<ApiFootballFixture[]> {
+  const [apiFootballLive, espnLive, apiFootballDate] = await Promise.allSettled([
+    getLiveFixtures().catch(() => []),
+    fetchEspnLiveFixtures().catch(() => []),
+    dateStr ? getFixturesByDate(dateStr).catch(() => []) : Promise.resolve([]),
+  ]);
+
+  const listA = apiFootballLive.status === 'fulfilled' ? apiFootballLive.value : [];
+  const listB = espnLive.status === 'fulfilled' ? espnLive.value : [];
+  const listC = apiFootballDate.status === 'fulfilled' ? apiFootballDate.value : [];
+
+  return [...listA, ...listB, ...listC];
+}

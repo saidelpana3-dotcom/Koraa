@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Language, PrizeClaim, Match, ThemeMode } from '../types';
-import { getNumericUserId } from '../utils/userId';
+import { getNumericUserId, getUserOrGuestNumericId } from '../utils/userId';
 import { KORA_LOGO_BASE64 } from '../assets/logoBase64';
 import { 
   db, 
@@ -71,6 +71,7 @@ interface AccountPageProps {
   initialSubTab?: AccountSubTab;
   highlightMatchId?: string;
   onOpenCoinsBreakdown?: () => void;
+  onOpenProSubscriptions?: () => void;
   onClose?: () => void;
 }
 
@@ -111,6 +112,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
   initialSubTab,
   highlightMatchId,
   onOpenCoinsBreakdown,
+  onOpenProSubscriptions,
   onClose,
 }) => {
   const isAr = language === 'ar';
@@ -245,16 +247,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
 
   // User ID & Copy State
   const [copiedId, setCopiedId] = useState<boolean>(false);
-  const [guestId] = useState<string>(() => {
-    let saved = localStorage.getItem('kora_guest_id');
-    if (!saved || !/^\d+$/.test(saved)) {
-      saved = Math.floor(10000000 + Math.random() * 90000000).toString();
-      localStorage.setItem('kora_guest_id', saved);
-    }
-    return saved;
-  });
-
-  const formattedUserId = user ? getNumericUserId(user.uid) : guestId;
+  const formattedUserId = getUserOrGuestNumericId(user);
 
   const handleCopyUserId = () => {
     const textToCopy = formattedUserId;
@@ -338,6 +331,76 @@ export const AccountPage: React.FC<AccountPageProps> = ({
     loadPayoutFromStorage();
     loadLocalClaims();
     loadLocalPredictions();
+
+    // 🌟 Instant sync from server-side unified account storage
+    const syncWithServer = async () => {
+      try {
+        const res = await fetch(`/api/user/sync-account?userId=${encodeURIComponent(userKey)}&email=${encodeURIComponent(user.email || '')}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.success && data?.account) {
+            const acc = data.account;
+            if (Array.isArray(acc.predictionsList) && acc.predictionsList.length > 0) {
+              setPredictionsList((prev) => {
+                const map = new Map<string, UserPredictionRecord>();
+                prev.forEach((p) => {
+                  const mId = p.matchId || p.id;
+                  if (mId) map.set(mId, p);
+                });
+                acc.predictionsList.forEach((p: any) => {
+                  const mId = p.matchId || p.id;
+                  if (mId && !map.has(mId)) {
+                    map.set(mId, p);
+                  }
+                });
+                const combined = Array.from(map.values());
+                localStorage.setItem(predsStorageKey, JSON.stringify(combined));
+                return combined;
+              });
+            }
+          }
+        }
+      } catch (_) {}
+    };
+    syncWithServer();
+
+    // Hydrate predictions from userPredictions prop if local predictions list is missing matches
+    if (userPredictions && typeof userPredictions === 'object' && Object.keys(userPredictions).length > 0) {
+      setPredictionsList((prev) => {
+        const map = new Map<string, UserPredictionRecord>();
+        prev.forEach((p) => {
+          const mId = p.matchId || p.id;
+          if (mId) map.set(mId, p);
+        });
+        Object.entries(userPredictions).forEach(([mId, pred]: [string, any]) => {
+          if (!map.has(mId) && pred) {
+            const targetMatch = matches.find((m) => m.id === mId);
+            const isFinished = targetMatch?.status === 'FINISHED';
+            const isExact = isFinished && targetMatch.homeScore === pred.predictedHomeScore && targetMatch.awayScore === pred.predictedAwayScore;
+            map.set(mId, {
+              id: `pred_${userKey}_${mId}`,
+              userId: userKey,
+              matchId: mId,
+              matchHomeTeam: targetMatch?.homeTeam || 'Home Team',
+              matchHomeTeamAr: targetMatch?.homeTeamAr || 'الفريق المضيف',
+              matchAwayTeam: targetMatch?.awayTeam || 'Away Team',
+              matchAwayTeamAr: targetMatch?.awayTeamAr || 'الفريق الضيف',
+              matchHomeScore: targetMatch?.homeScore,
+              matchAwayScore: targetMatch?.awayScore,
+              predictedHomeScore: pred.predictedHomeScore,
+              predictedAwayScore: pred.predictedAwayScore,
+              status: isFinished ? (isExact ? 'EXACT_SCORE' : 'MISSED') : 'PENDING',
+              pointsEarned: isExact ? 50 : 0,
+              coinsEarned: isExact ? 50 : 0,
+              createdAt: new Date().toISOString(),
+            });
+          }
+        });
+        const synthesized = Array.from(map.values());
+        localStorage.setItem(predsStorageKey, JSON.stringify(synthesized));
+        return synthesized;
+      });
+    }
 
     // Listen for cross-page updates (e.g. from Predictions, Prizes, or background sync)
     const handleProfileUpdate = () => {
@@ -818,17 +881,11 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                 <div>
                   <div className="flex items-center justify-center sm:justify-start gap-1.5">
                     <span className="text-[10px] font-black uppercase text-cyan-700 dark:text-cyan-400 tracking-wider">
-                      {isAr ? 'معرّف الحساب (User ID)' : 'Account User ID'}
+                      {isAr ? 'ID الحساب (ثابت ومسجل بالسجلات)' : 'Permanent Account ID'}
                     </span>
-                    {user ? (
-                      <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 font-black text-[9px] border border-emerald-500/30">
-                        {isAr ? 'موثق 🟢' : 'Verified 🟢'}
-                      </span>
-                    ) : (
-                      <span className="px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-800 dark:text-amber-300 font-bold text-[9px] border border-amber-500/30">
-                        {isAr ? 'مؤقت' : 'Guest'}
-                      </span>
-                    )}
+                    <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 font-black text-[9px] border border-emerald-500/30">
+                      {isAr ? 'مسجل ومثبت بالسجلات 🟢' : 'Permanently Registered 🟢'}
+                    </span>
                   </div>
 
                   <div className="flex items-center justify-center sm:justify-start gap-1.5 mt-0.5">
@@ -953,6 +1010,46 @@ export const AccountPage: React.FC<AccountPageProps> = ({
               <p className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold">
                 {isAr ? 'إنستاباي ومحافظ' : 'InstaPay & Wallets'}
               </p>
+            </div>
+          </div>
+
+          {/* Quick Action Hub: Pro Subscriptions (شحن الكوينز) & Daily Login Gift (١٥ كوينز) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {/* Card A: Kora PRO Subscriptions (اشتراكات برو) */}
+            <div
+              onClick={onOpenProSubscriptions}
+              className={`border-2 rounded-2xl p-3.5 shadow-md cursor-pointer transition-all active:scale-[0.99] group relative overflow-hidden flex items-center justify-between gap-3 ${
+                isDark
+                  ? 'bg-gradient-to-r from-amber-950/70 via-slate-900 to-yellow-950/60 border-amber-400/80 hover:border-amber-300 shadow-amber-950/40 text-slate-100'
+                  : 'bg-gradient-to-r from-amber-50 via-white to-yellow-50 border-amber-400 hover:border-amber-500 shadow-amber-500/15 text-slate-900'
+              }`}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-300 text-slate-950 flex items-center justify-center font-black text-xl shadow-md shrink-0 group-hover:scale-105 transition-transform">
+                  👑
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <h4 className="font-black text-xs sm:text-sm text-amber-600 dark:text-amber-400 tracking-tight flex items-center gap-1">
+                      <span>{isAr ? 'اشتراكات برو (شحن الكوينز)' : 'Pro Subscriptions'}</span>
+                      <span>💰</span>
+                    </h4>
+                    <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40">
+                      VIP
+                    </span>
+                  </div>
+                  <p className="text-[10px] sm:text-[11px] text-slate-600 dark:text-slate-400 mt-0.5 truncate">
+                    {isAr ? '٤ باقات رسمية فورية عبر واتساب (من ٤٠ جنيه)' : '4 official coin packs via WhatsApp (from 40 EGP)'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="shrink-0">
+                <span className="px-2.5 py-1 rounded-xl text-xs font-black bg-amber-500 text-slate-950 hover:bg-amber-400 shadow-sm flex items-center gap-1">
+                  <span>{isAr ? 'عرض الباقات' : 'View Packs'}</span>
+                  <span>←</span>
+                </span>
+              </div>
             </div>
           </div>
 
@@ -1955,8 +2052,8 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                     </h4>
                     <p className={isDark ? 'text-slate-400' : 'text-slate-600'}>
                       {isAr
-                        ? 'يستحق المستخدم ٥٠ كوينز عند إصابة التوقع الدقيق لنتيجة المباراة أو المطالبة بالهدية اليومية. جميع الكوينز مجانية ومكتسبة نتيجة للتفاعل العادل داخل التطبيق.'
-                        : 'Users earn 50 prediction coins by correctly forecasting match scores and claiming daily gifts. Coins are earned through active, fair app engagement.'}
+                        ? 'رسوم التوقع لأي مباراة هي ٥ كوينز فقط. ويستحق المستخدم ٥٠ كوينز جائزة كاش عند إصابة التوقع الدقيق للنتيجة النهائية، كما يمكن كسب ٥ كوينز بمشاهدة الإعلانات اليومية.'
+                        : 'Every match prediction costs 5 coins. Users earn 50 coins for exact score predictions, and 5 coins by watching daily ads.'}
                     </p>
                   </div>
 

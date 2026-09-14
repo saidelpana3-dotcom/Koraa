@@ -445,15 +445,43 @@ export const CoinsHistoryModal: React.FC<CoinsHistoryModalProps> = ({
     timestamp: claim.createdAt ? new Date(claim.createdAt).getTime() : Date.now() - idx * 1000,
   }));
 
+  // 4. Build Bonus Transactions (+) like daily login gift
+  const bonusTransactions: CoinTransactionItem[] = [];
+  try {
+    const userKey = user?.uid || user?.id || localStorage.getItem('kora_user_numeric_id') || localStorage.getItem('kora_guest_numeric_id') || 'guest';
+    const histKey = `kora_coins_history_${userKey}`;
+    const rawHist = localStorage.getItem(histKey);
+    if (rawHist) {
+      const parsed = JSON.parse(rawHist);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((item: any, idx: number) => {
+          if (item && (item.type === 'DAILY_REWARD' || item.type === 'BONUS' || item.type === 'AD_REWARD')) {
+            bonusTransactions.push({
+              id: item.id || `bonus_${idx}`,
+              type: 'BONUS',
+              amount: item.coins || item.amount || 5,
+              titleAr: item.titleAr || (item.type === 'AD_REWARD' ? 'مشاهدة إعلان (+5 كوينز) 📺' : 'مكافأة كوينز 🎁'),
+              titleEn: item.titleEn || (item.type === 'AD_REWARD' ? 'Rewarded Ad Watch (+5 Coins) 📺' : 'Coins Bonus 🎁'),
+              date: item.date || new Date().toISOString(),
+              dateAr: item.date ? new Date(item.date).toLocaleDateString('ar-EG') : undefined,
+              timestamp: item.date ? new Date(item.date).getTime() : Date.now() - idx * 1000,
+            });
+          }
+        });
+      }
+    }
+  } catch (_) {}
+
   // Combine and sort all transactions by timestamp descending
   const allTransactions: CoinTransactionItem[] = [
     ...winningTransactions,
+    ...bonusTransactions,
     ...feeTransactions,
     ...claimTransactions,
   ].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
   // Compute Totals
-  const totalEarnedCoins = winningTransactions.reduce((acc, curr) => acc + curr.amount, 0);
+  const totalEarnedCoins = [...winningTransactions, ...bonusTransactions].reduce((acc, curr) => acc + curr.amount, 0);
   const totalSpentCoins = Math.abs(
     [...feeTransactions, ...claimTransactions].reduce((acc, curr) => acc + curr.amount, 0)
   );

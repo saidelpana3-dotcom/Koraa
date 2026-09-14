@@ -1,5 +1,5 @@
 import React from 'react';
-import { Trophy, Newspaper, Heart, Search, Gift, UserCheck, LogIn, Bell, ArrowRight, ArrowLeft, Sun, Moon, X, Radio } from 'lucide-react';
+import { Trophy, Newspaper, Heart, Gift, UserCheck, LogIn, Bell, ArrowRight, ArrowLeft, Sun, Moon, Radio, Sparkles, Crown, DollarSign, Wallet, X } from 'lucide-react';
 import { Language, ThemeMode } from '../types';
 import { KORA_LOGO_BASE64 } from '../assets/logoBase64';
 
@@ -14,8 +14,8 @@ interface HeaderProps {
   previousTab?: 'matches' | 'tournaments' | 'prizes' | 'account' | 'ai' | 'news' | 'favorites';
   stadiumAudioActive?: boolean;
   onToggleStadiumAudio?: () => void;
-  searchQuery: string;
-  setSearchQuery: (q: string) => void;
+  searchQuery?: string;
+  setSearchQuery?: (q: string) => void;
   favoriteCount: number;
   userPoints?: number;
   userDisplayName?: string | null;
@@ -26,6 +26,7 @@ interface HeaderProps {
   onFootballSync?: () => void;
   isSyncingFootball?: boolean;
   onOpenCoinsBreakdown?: () => void;
+  onOpenProSubscriptions?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -36,7 +37,7 @@ export const Header: React.FC<HeaderProps> = ({
   setActiveTab,
   onClosePage,
   previousTab = 'matches',
-  searchQuery,
+  searchQuery = '',
   setSearchQuery,
   userPoints = 0,
   userDisplayName,
@@ -46,6 +47,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenCoinsBreakdown,
   onFootballSync,
   isSyncingFootball = false,
+  onOpenProSubscriptions,
 }) => {
   const isAr = language === 'ar';
   const isDark = theme === 'dark';
@@ -81,8 +83,16 @@ export const Header: React.FC<HeaderProps> = ({
           
           {/* Brand & User Greeting */}
           <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
-            <button 
+            <div 
+              role="button"
+              tabIndex={0}
               onClick={() => setActiveTab('matches')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setActiveTab('matches');
+                }
+              }}
               className="flex items-center gap-2 sm:gap-2.5 group text-left rtl:text-right cursor-pointer select-none min-w-0"
             >
               {/* Glowing Official Logo Icon */}
@@ -111,12 +121,19 @@ export const Header: React.FC<HeaderProps> = ({
                   }`}>
                     KORA LIVE
                   </span>
-                  <span className="inline-flex items-center px-1.5 py-0.2 rounded-md text-[9px] font-black bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/40 tracking-wider shrink-0">
-                    PRO
-                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onOpenProSubscriptions) onOpenProSubscriptions();
+                    }}
+                    className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[9px] font-black bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 border border-amber-300 tracking-wider shrink-0 cursor-pointer shadow-xs active:scale-95 transition-all"
+                  >
+                    PRO 👑
+                  </button>
                 </div>
               </div>
-            </button>
+            </div>
           </div>
 
           {/* Action Icons (Theme toggle, Notifications, Coins & Profile) */}
@@ -152,27 +169,6 @@ export const Header: React.FC<HeaderProps> = ({
               </button>
             )}
 
-            {/* Notification Bell Button */}
-            {onOpenNotificationCenter && (
-              <button
-                type="button"
-                onClick={onOpenNotificationCenter}
-                title={isAr ? 'مركز الإشعارات والتنبيهات' : 'Push Notification Center'}
-                className={`relative p-2 rounded-2xl border transition-all active:scale-95 cursor-pointer shadow-sm ${
-                  isDark
-                    ? 'bg-slate-900/90 text-slate-300 border-slate-800 hover:border-amber-500/50 hover:bg-slate-800 hover:text-amber-300'
-                    : 'bg-slate-100 text-slate-700 border-slate-200 hover:border-amber-500 hover:bg-slate-200 hover:text-amber-600'
-                }`}
-              >
-                <Bell className="w-4 h-4 text-amber-500" />
-                {activeSubscriptionsCount > 0 && (
-                  <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-[9px] font-black text-white shadow-md animate-pulse">
-                    {activeSubscriptionsCount}
-                  </span>
-                )}
-              </button>
-            )}
-
             {/* Auth / Profile button - Compact and responsive avatar */}
             {userDisplayName ? (
               <button
@@ -205,36 +201,49 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Sub-Header Bar: Full Width Search */}
-        <div className={`py-2 border-t flex items-center ${
+        {/* Sub-Header Bar: Cash & InstaPay Prizes Banner (Swapped to Top Header) */}
+        <div className={`py-1.5 border-t flex items-center ${
           isDark ? 'border-slate-800/60' : 'border-slate-200'
         }`}>
-          {/* Modern Search Input */}
-          <div className="w-full relative">
-            <Search className="w-4 h-4 absolute left-3 rtl:left-auto rtl:right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={isAr ? 'بحث عن ماتش أو نادي...' : 'Search match or club...'}
-              className={`w-full pl-9 rtl:pl-9 rtl:pr-9 pr-9 py-2 text-xs sm:text-sm rounded-2xl focus:outline-none transition-all shadow-inner border ${
-                isDark
-                  ? 'bg-slate-900/90 border-slate-800 text-slate-200 placeholder-slate-400 focus:border-emerald-500/60'
-                  : 'bg-slate-100 border-slate-200 text-slate-900 placeholder-slate-500 focus:bg-white focus:border-emerald-500'
-              }`}
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                aria-label={isAr ? 'مسح وإلغاء البحث' : 'Clear search'}
-                title={isAr ? 'مسح وإلغاء البحث (×)' : 'Clear search (×)'}
-                className="absolute right-2.5 rtl:right-auto rtl:left-2.5 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-slate-700/90 hover:bg-rose-600 active:bg-rose-700 text-white flex items-center justify-center transition-all cursor-pointer shadow-xs"
-              >
-                <X className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
-              </button>
-            )}
-          </div>
+          <button
+            type="button"
+            onClick={() => setActiveTab('prizes')}
+            className={`w-full py-2.5 px-3.5 sm:px-4 rounded-2xl border-2 transition-all active:scale-[0.99] cursor-pointer shadow-md flex items-center justify-between gap-2.5 group relative overflow-hidden ${
+              isDark
+                ? 'bg-gradient-to-r from-emerald-950/80 via-slate-900 to-amber-950/70 border-emerald-500/60 hover:border-emerald-400 shadow-emerald-950/40 text-slate-100'
+                : 'bg-gradient-to-r from-emerald-100 via-emerald-50 to-amber-100 border-emerald-400 hover:border-emerald-500 shadow-emerald-500/15 text-slate-900'
+            }`}
+          >
+            {/* Subtle Shimmer Background Light */}
+            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-emerald-400/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+
+            <div className="flex items-center gap-2.5 min-w-0">
+              {/* Prize & Cash Icon Badge */}
+              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-tr from-emerald-500 via-teal-400 to-emerald-300 text-white flex items-center justify-center font-black text-base sm:text-lg shadow-sm shrink-0">
+                🎁
+              </div>
+
+              <div className="flex flex-col text-left rtl:text-right min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-black text-xs sm:text-sm text-emerald-600 dark:text-emerald-400 tracking-tight flex items-center gap-1">
+                    <span>{isAr ? 'جوائز كاش إنستاباي وكوينز أسبوعية 💰' : 'InstaPay Cash & Weekly Coins Rewards 💰'}</span>
+                  </span>
+                  <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40">
+                    {isAr ? 'كاش فوري' : 'Instant Cash'}
+                  </span>
+                </div>
+                <span className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  {isAr ? 'توقع المباريات واربح رصيد كاش قابل للسحب الفوري ⚡' : 'Predict fixtures and win withdrawable instant cash ⚡'}
+                </span>
+              </div>
+            </div>
+
+            {/* CTA Button Badge */}
+            <div className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-black text-[11px] sm:text-xs shadow-sm group-hover:scale-105 transition-transform shrink-0">
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>{isAr ? 'عرض الجوائز 🎁' : 'View Prizes 🎁'}</span>
+            </div>
+          </button>
         </div>
       </div>
 

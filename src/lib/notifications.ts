@@ -269,6 +269,20 @@ export function listenToNotificationLogs(
   });
 }
 
+// Clear all notification logs helper
+export async function clearAllNotificationLogs(logs: PushNotificationLog[]): Promise<void> {
+  if (!logs || logs.length === 0) return;
+  try {
+    for (const log of logs) {
+      if (log.id) {
+        await deleteDoc(doc(db, 'notifications', log.id));
+      }
+    }
+  } catch (err) {
+    console.warn('Error clearing notification logs:', err);
+  }
+}
+
 export interface LiveNotificationPayload {
   userId?: string;
   matchId: string;

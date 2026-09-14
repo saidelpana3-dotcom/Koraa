@@ -13,6 +13,8 @@ export interface FootballApiLiveMatchResult {
   scoringTeam?: 'HOME' | 'AWAY' | null;
   matchNote?: string;
   source?: string;
+  events?: any[];
+  stats?: any;
 }
 
 export interface FootballApiSyncResponse {
@@ -191,6 +193,8 @@ export function processApiFootballSyncedMatches(
       time: (updatedStatus === 'FINISHED' || synced.isFinished) ? (isAr ? 'انتهت' : 'FT') : match.time,
       minute: synced.minute || (updatedStatus === 'FINISHED' ? (isAr ? 'انتهت' : 'FT') : match.minute),
       isFinished: updatedStatus === 'FINISHED' || synced.isFinished,
+      events: (Array.isArray(synced.events) && synced.events.length > 0) ? synced.events : match.events,
+      stats: synced.stats || match.stats,
       isGoogleSynced: true,
       lastSyncedAt: new Date().toISOString(),
     };

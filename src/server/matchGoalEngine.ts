@@ -6,6 +6,8 @@
  * is suspended, rate-limited, or unavailable.
  */
 
+import { getOfficialTeamRoster } from '../data/teamRosters';
+
 export interface MatchGoalEvent {
   minute: number;
   type: 'GOAL' | 'YELLOW_CARD' | 'RED_CARD' | 'SUBSTITUTION';
@@ -41,6 +43,46 @@ export interface MatchSimulationProfile {
 
 // Curated realistic match profiles for scheduled matches
 export const CURATED_MATCH_SIMULATION_PROFILES: Record<string, MatchSimulationProfile> = {
+  // Premier League: Manchester United vs Manchester City (0 - 1, 23' Red Card Foden, 60' Goal Haaland)
+  m_epl_manutd_mancity_sep13: {
+    targetHomeScore: 0,
+    targetAwayScore: 1,
+    events: [
+      {
+        minute: 23,
+        type: 'RED_CARD',
+        team: 'AWAY',
+        player: 'Phil Foden',
+        playerAr: 'فيل فودن',
+        score: '0 - 0',
+        note: 'بطاقة حمراء مباشرة (23\') - طرد فيل فودن',
+        noteAr: 'بطاقة حمراء مباشرة (23\') - طرد فيل فودن',
+      },
+      {
+        minute: 60,
+        type: 'GOAL',
+        team: 'AWAY',
+        player: 'Erling Haaland',
+        playerAr: 'إرلينغ براوت هولاند',
+        score: '0 - 1',
+        note: 'هدف التقدم بقدم إرلينغ براوت هولاند بعد تمريرة حاسمة',
+        noteAr: 'هدف التقدم بقدم إرلينغ براوت هولاند بعد تمريرة حاسمة',
+      },
+    ],
+    stats: {
+      homeShots: 14,
+      awayShots: 9,
+      homeShotsOnTarget: 4,
+      awayShotsOnTarget: 3,
+      homePossession: 58,
+      awayPossession: 42,
+      homeFouls: 10,
+      awayFouls: 13,
+      homeCorners: 6,
+      awayCorners: 4,
+    },
+  },
+
   // Zamalek SC vs Abo Qir Fertilizers (Egyptian Premier League - 2026-09-08 20:00 Cairo Time)
   m_egy_zamalek_abuqir_sep8: {
     targetHomeScore: 2,
@@ -550,40 +592,84 @@ export function getOrCreateMatchProfile(match: any): MatchSimulationProfile {
   const awayName = match.awayTeam || 'Away';
   const awayNameAr = match.awayTeamAr || awayName;
 
+  const homeRoster = getOfficialTeamRoster(homeName) || getOfficialTeamRoster(homeNameAr);
+  const awayRoster = getOfficialTeamRoster(awayName) || getOfficialTeamRoster(awayNameAr);
+
+  const homeAttackers = homeRoster?.starting11.filter(p => p.position === 'FWD' || p.position === 'MID') || [];
+  const awayAttackers = awayRoster?.starting11.filter(p => p.position === 'FWD' || p.position === 'MID') || [];
+  const homeDefenders = homeRoster?.starting11.filter(p => p.position === 'DEF') || [];
+  const awayDefenders = awayRoster?.starting11.filter(p => p.position === 'DEF') || [];
+
   let currentHome = 0;
   let currentAway = 0;
 
-  // Distribute home goals
+  // Distribute home goals with authentic players
   const homeMinutes = [21, 43, 67, 84].slice(0, targetHomeScore);
   homeMinutes.forEach((min, idx) => {
     currentHome++;
+    const scorer = homeAttackers.length > 0 ? homeAttackers[idx % homeAttackers.length] : null;
+    const assister = homeAttackers.length > 1 ? homeAttackers[(idx + 1) % homeAttackers.length] : null;
     events.push({
       minute: min,
       type: 'GOAL',
       team: 'HOME',
-      player: `${homeName} Forward`,
-      playerAr: `مهاجم ${homeNameAr}`,
+      player: scorer ? scorer.name : `${homeName} Forward`,
+      playerAr: scorer ? (scorer.nameAr || scorer.name) : `مهاجم ${homeNameAr}`,
+      assist: assister ? assister.name : undefined,
+      assistAr: assister ? (assister.nameAr || assister.name) : undefined,
       score: `${currentHome} - ${currentAway}`,
       note: 'تسديدة متقنة في الشباك',
       noteAr: 'تسديدة متقنة في الشباك',
     });
   });
 
-  // Distribute away goals
+  // Distribute away goals with authentic players
   const awayMinutes = [29, 61, 78].slice(0, targetAwayScore);
-  awayMinutes.forEach((min) => {
+  awayMinutes.forEach((min, idx) => {
     currentAway++;
+    const scorer = awayAttackers.length > 0 ? awayAttackers[idx % awayAttackers.length] : null;
+    const assister = awayAttackers.length > 1 ? awayAttackers[(idx + 1) % awayAttackers.length] : null;
     events.push({
       minute: min,
       type: 'GOAL',
       team: 'AWAY',
-      player: `${awayName} Forward`,
-      playerAr: `مهاجم ${awayNameAr}`,
+      player: scorer ? scorer.name : `${awayName} Forward`,
+      playerAr: scorer ? (scorer.nameAr || scorer.name) : `مهاجم ${awayNameAr}`,
+      assist: assister ? assister.name : undefined,
+      assistAr: assister ? (assister.nameAr || assister.name) : undefined,
       score: `${currentHome} - ${currentAway}`,
-      note: 'هدف في المرمى',
-      noteAr: 'هدف في المرمى',
+      note: 'هدف في المرمى بعد تمريرة ذكية',
+      noteAr: 'هدف في المرمى بعد تمريرة ذكية',
     });
   });
+
+  // Add realistic yellow cards
+  if (absHash % 2 === 0 && awayDefenders.length > 0) {
+    const cardedAway = awayDefenders[0];
+    events.push({
+      minute: 34,
+      type: 'YELLOW_CARD',
+      team: 'AWAY',
+      player: cardedAway.name,
+      playerAr: cardedAway.nameAr || cardedAway.name,
+      score: `${currentHome} - ${currentAway}`,
+      note: 'بطاقة صفراء (34\') - تدخل قوي',
+      noteAr: 'بطاقة صفراء (34\') - تدخل قوي',
+    });
+  }
+  if (absHash % 3 === 0 && homeDefenders.length > 0) {
+    const cardedHome = homeDefenders[0];
+    events.push({
+      minute: 55,
+      type: 'YELLOW_CARD',
+      team: 'HOME',
+      player: cardedHome.name,
+      playerAr: cardedHome.nameAr || cardedHome.name,
+      score: `${currentHome} - ${currentAway}`,
+      note: 'بطاقة صفراء (55\') - إعاقة هجمة واعدة',
+      noteAr: 'بطاقة صفراء (55\') - إعاقة هجمة واعدة',
+    });
+  }
 
   // Sort events chronologically
   events.sort((a, b) => a.minute - b.minute);
@@ -652,6 +738,7 @@ export function computeSimulatedMatchState(
 
   // 1. If match has already officially finished in master records or has no kickoff
   if (match.status === 'FINISHED' || match.isFinished === true) {
+    const finalEvents = (Array.isArray(match.events) && match.events.length > 0) ? match.events : profile.events;
     return {
       status: 'FINISHED',
       minute: isArabic ? 'انتهت' : 'FT',
@@ -662,7 +749,7 @@ export function computeSimulatedMatchState(
       goalDetected: false,
       scoringTeam: null,
       lastGoal: null,
-      events: profile.events,
+      events: finalEvents,
       stats: profile.stats,
     };
   }
@@ -758,8 +845,9 @@ export function computeSimulatedMatchState(
   }
 
   // Filter events up to current played minute
-  const occurredEvents = profile.events.filter((e) => e.minute <= playedMinute);
-  const goalEvents = occurredEvents.filter((e) => e.type === 'GOAL');
+  const baseEvents = (Array.isArray(match.events) && match.events.length > 0) ? match.events : profile.events;
+  const occurredEvents = baseEvents.filter((e) => (e.minute || 0) <= playedMinute);
+  const goalEvents = occurredEvents.filter((e) => e.type === 'GOAL' || (typeof e.type === 'string' && e.type.toLowerCase().includes('goal')));
 
   let currentHomeScore = 0;
   let currentAwayScore = 0;

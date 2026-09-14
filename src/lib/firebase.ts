@@ -19,6 +19,7 @@ import {
 import { 
   getAuth, 
   GoogleAuthProvider, 
+  OAuthProvider,
   signInWithPopup, 
   signOut, 
   onAuthStateChanged, 
@@ -118,11 +119,16 @@ googleProvider.setCustomParameters({
   prompt: 'select_account'
 });
 
+const appleProvider = new OAuthProvider('apple.com');
+appleProvider.addScope('email');
+appleProvider.addScope('name');
+
 export {
   app,
   db,
   auth,
   googleProvider,
+  appleProvider,
   signInWithPopup,
   signOut,
   onAuthStateChanged,

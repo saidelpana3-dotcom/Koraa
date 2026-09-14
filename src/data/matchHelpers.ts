@@ -313,6 +313,66 @@ export function getMatchPlayedMinute(match: Match, isAr: boolean = true): string
 }
 
 /**
+ * Returns current elapsed match minute as an integer number (0 to 120).
+ * Used to filter and display only the live events that have actually occurred!
+ */
+export function getMatchCurrentMinuteNumber(match: Match): number {
+  if (match.status === 'FINISHED' || match.isFinished || match.pointsDistributed) {
+    return 120; // Full match ended, all events valid
+  }
+  if (match.status === 'UPCOMING') {
+    return 0; // Pre-match, no events have occurred yet
+  }
+  if (match.status === 'HALF_TIME') {
+    return 45;
+  }
+
+  // 1. Check explicit minute string
+  if (match.minute) {
+    const minStr = String(match.minute).trim();
+    if (minStr.includes('45+')) {
+      const extra = parseInt(minStr.replace('45+', ''), 10) || 1;
+      return 45 + extra;
+    }
+    if (minStr.includes('90+')) {
+      const extra = parseInt(minStr.replace('90+', ''), 10) || 1;
+      return 90 + extra;
+    }
+    const parsed = parseInt(minStr.replace(/[^0-9]/g, ''), 10);
+    if (!isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  // 2. Compute from kickoff
+  let kickoffMs = match.kickoffTimeMs;
+  if (!kickoffMs && match.date && match.time) {
+    try {
+      const [year, month, day] = match.date.split('-').map(Number);
+      const [h, m] = match.time.replace(/[^0-9:]/g, '').split(':').map(Number);
+      if (year && month && day && !isNaN(h)) {
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const dt = new Date(`${year}-${pad(month)}-${pad(day)}T${pad(h)}:${pad(m || 0)}:00+03:00`);
+        if (!isNaN(dt.getTime())) kickoffMs = dt.getTime();
+      }
+    } catch (_) {}
+  }
+
+  if (kickoffMs) {
+    const rawElapsed = Math.floor((Date.now() - kickoffMs) / 60000);
+    if (rawElapsed < 0) return 0;
+    if (rawElapsed <= 4) return 1;
+    if (rawElapsed <= 50) return Math.min(45, Math.max(1, rawElapsed - 3));
+    if (rawElapsed <= 55) return 45 + Math.max(1, rawElapsed - 50);
+    if (rawElapsed <= 72) return 45;
+    if (rawElapsed <= 122) return Math.min(90, 46 + Math.floor((rawElapsed - 72) * (44 / 50)));
+    return 90 + Math.min(9, Math.max(1, rawElapsed - 122));
+  }
+
+  return 1;
+}
+
+/**
  * Determines whether any match today is currently in-progress, live, or has started,
  * or is within 60 minutes of kickoff (when official club lineups are published).
  * Ensures live fetching begins with the first match of the day!

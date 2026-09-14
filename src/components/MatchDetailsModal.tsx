@@ -3,7 +3,7 @@ import { Match, Language } from '../types';
 import { PitchView } from './PitchView';
 import { TeamLogo } from './TeamLogo';
 import { generateFinishedMatchStats } from '../lib/matchStatsGenerator';
-import { isMatchLive, getMatchPlayedMinute } from '../data/matchHelpers';
+import { isMatchLive, getMatchPlayedMinute, getMatchCurrentMinuteNumber } from '../data/matchHelpers';
 import { getOfficialTeamRoster } from '../data/teamRosters';
 import { 
   X, 
@@ -35,6 +35,9 @@ interface MatchDetailsModalProps {
   isSubscribed?: boolean;
   onOpenSubscribeModal?: (match: Match) => void;
   userPoints?: number;
+  onOpenProSubscriptions?: () => void;
+  isFreePrediction?: boolean;
+  remainingFreePredictions?: number;
 }
 
 export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
@@ -48,6 +51,9 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
   isSubscribed,
   onOpenSubscribeModal,
   userPoints = 0,
+  onOpenProSubscriptions,
+  isFreePrediction = false,
+  remainingFreePredictions = 0,
 }) => {
   const isAr = language === 'ar';
   const isLive = isMatchLive(match);
@@ -496,6 +502,13 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
             });
 
             const sortedEvents = Array.from(dedupMap.values()).sort((a, b) => (a.minute ?? 0) - (b.minute ?? 0));
+            const isMatchEnded = match.status === 'FINISHED' || match.isFinished || match.pointsDistributed;
+            const currentMinuteNum = getMatchCurrentMinuteNumber(match);
+            const visibleEvents = isMatchEnded 
+              ? sortedEvents 
+              : isUpcoming 
+              ? [] 
+              : sortedEvents.filter((e) => (e.minute ?? 0) <= currentMinuteNum);
 
             return (
               <div className="space-y-4 max-w-2xl mx-auto">
@@ -527,19 +540,21 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                         : `Kickoff scheduled for ${match.time}. All live goals, cards, substitutions, and events will appear here in real time.`}
                     </p>
                   </div>
-                ) : sortedEvents.length === 0 ? (
+                ) : visibleEvents.length === 0 ? (
                   <div className="p-8 text-center text-slate-400 bg-slate-950/60 rounded-2xl border border-slate-800">
                     <Clock className="w-8 h-8 mx-auto mb-2 text-slate-500" />
                     <p className="font-medium text-sm text-slate-300">
-                      {isAr ? 'لا توجد أحداث مسجلة بعد في هذه المباراة.' : 'No events recorded yet for this match.'}
+                      {isAr 
+                        ? `لا توجد أهداف أو بطاقات مسجلة حتى الدقيقة الحالية (${currentMinuteNum}').`
+                        : `No goals or cards recorded yet up to the current minute (${currentMinuteNum}').`}
                     </p>
                     <p className="text-xs text-slate-500 mt-1">
-                      {isAr ? 'يتم تحديث مجريات اللقاء والإنذارات والأهداف تباعاً.' : 'Match events and stats update as the game unfolds.'}
+                      {isAr ? 'يتم تحديث مجريات اللقاء والإنذارات والأهداف فور حدوثها في الوقت الفعلي.' : 'Match events and stats update as the game unfolds in real time.'}
                     </p>
                   </div>
                 ) : (
                   <div className="relative border-l-2 border-slate-800 rtl:border-l-0 rtl:border-r-2 ml-4 rtl:ml-0 rtl:mr-4 space-y-4">
-                    {sortedEvents.map((evt, idx) => {
+                    {visibleEvents.map((evt, idx) => {
                       const isHome =
                         evt.team === 'HOME' ||
                         evt.team === 'home' ||
@@ -927,7 +942,8 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
             const isFinished = match.status === 'FINISHED';
             const isStarted = match.status === 'LIVE' || match.status === 'HALF_TIME' || (match.kickoffTimeMs ? Date.now() >= match.kickoffTimeMs : false);
             const isPredictionLocked = isFinished || isStarted || match.isPredictionClosed;
-            const coinsReward = match.customCoinsReward || 50;
+            const coinsReward = typeof match.customCoinsReward === 'number' ? match.customCoinsReward : 0;
+            const effectiveFee = 0;
 
             // Popular community score distribution
             const scoreDistribution = [
@@ -996,7 +1012,9 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                           : 'bg-slate-800 text-slate-400'
                       }`}>
                         {(match.homeScore === existingPrediction.predictedHomeScore && match.awayScore === existingPrediction.predictedAwayScore)
-                          ? (isAr ? 'صحيح (+50 كوينز) 🏆' : 'Exact (+50 Coins) 🏆')
+                          ? (coinsReward > 0
+                              ? (isAr ? `صحيح (+${coinsReward} كوينز) 🏆` : `Exact (+${coinsReward} Coins) 🏆`)
+                              : (isAr ? 'صحيح (توقع سليم) 🎯' : 'Exact Prediction 🎯'))
                           : (isAr ? 'لم يصب التوقع' : 'Missed')}
                       </span>
                     </div>
@@ -1010,9 +1028,13 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                   <div className="p-3 bg-slate-900/90 rounded-xl border border-emerald-500/30 text-center space-y-0.5">
                     <div className="text-xl font-black text-emerald-400">1,120 {isAr ? 'مشترك أصابوا التوقع' : 'Winners'}</div>
                     <div className="text-xs font-bold text-emerald-300">
-                      {isAr
-                        ? `🎉 حصل كل منهم على +${coinsReward} كوينز 🪙 في رصيد المحفظة`
-                        : `🎉 Each winner earned +${coinsReward} Coins 🪙 in their wallet`}
+                      {coinsReward > 0
+                        ? (isAr
+                            ? `🎉 حصل كل منهم على +${coinsReward} كوينز 🪙 في رصيد المحفظة`
+                            : `🎉 Each winner earned +${coinsReward} Coins 🪙 in their wallet`)
+                        : (isAr
+                            ? '🎯 تم احتساب التوقع الصحيح في لوحة المتصدرين'
+                            : '🎯 Exact predictions counted towards Leaderboard')}
                     </div>
                   </div>
                 </div>
@@ -1057,26 +1079,28 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                   <div className="flex flex-wrap items-center justify-between gap-1.5">
                     <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-black">
                       <span className="animate-pulse">✨</span>
-                      <span>{isAr ? `توقع النتيجة واكسب +${coinsReward} كوينز لرصيدك` : `Predict Exact Score (+${coinsReward} Coins)`}</span>
+                      <span>
+                        {coinsReward > 0
+                          ? (isAr ? `توقع النتيجة واكسب +${coinsReward} كوينز لرصيدك` : `Predict Exact Score (+${coinsReward} Coins)`)
+                          : (isAr ? 'توقع النتيجة مجاناً ونافس في الترتيب 🎯' : 'Predict Score Free & Climb Leaderboard 🎯')}
+                      </span>
                     </div>
 
-                    {match.predictionFeeCoins && (
-                      <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[11px] font-black">
-                        <span>🪙</span>
-                        <span>{isAr ? `رسوم التوقع: ${match.predictionFeeCoins} كوينز` : `Fee: ${match.predictionFeeCoins} Coins`}</span>
-                      </div>
-                    )}
+                    <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[11px] font-black">
+                      <span>🎁</span>
+                      <span>{isAr ? 'توقع مجاني بدون أي رسوم' : '100% Free Prediction'}</span>
+                    </div>
                   </div>
 
-                  {/* Balance Status Banner if match has fee */}
-                  {match.predictionFeeCoins && !existingPrediction && (
-                    <div className="p-2.5 bg-amber-950/40 rounded-xl border border-amber-500/30 flex items-center justify-between text-xs font-bold text-amber-200">
+                  {/* Free Prediction Banner */}
+                  {!existingPrediction && (
+                    <div className="p-2.5 bg-emerald-950/40 rounded-xl border border-emerald-500/30 flex items-center justify-between text-xs font-bold text-emerald-200">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-sm">💰</span>
-                        <span>{isAr ? 'رصيدك الحالي من الكوينز:' : 'Your Coins Balance:'}</span>
+                        <span className="text-sm">🎁</span>
+                        <span>{isAr ? 'توقع النتائج مجاني بدون أي خصم كوينز' : 'Match predictions are 100% free with 0 fee'}</span>
                       </div>
-                      <span className="font-mono font-black text-amber-400 text-sm">
-                        {userPoints} 🪙
+                      <span className="font-mono font-black text-emerald-400 text-sm">
+                        مجاناً 0 🪙
                       </span>
                     </div>
                   )}
@@ -1148,17 +1172,13 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                   {/* Submit / Edit Prediction Button */}
                   <button
                     onClick={() => {
-                      if (match.predictionFeeCoins && !existingPrediction) {
-                        setShowFeeConfirmation(true);
-                      } else {
-                        if (onSavePrediction) {
-                          onSavePrediction(match, predHomeScore, predAwayScore);
-                        }
-                        setPredictionSaved(true);
-                        setTimeout(() => {
-                          onClose();
-                        }, 400);
+                      if (onSavePrediction) {
+                        onSavePrediction(match, predHomeScore, predAwayScore);
                       }
+                      setPredictionSaved(true);
+                      setTimeout(() => {
+                        onClose();
+                      }, 400);
                     }}
                     className={`w-full py-2.5 px-4 rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer active:scale-98 ${
                       predictionSaved
@@ -1172,9 +1192,9 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                         ? (isAr ? '✓ تم حفظ توقعك بنجاح!' : '✓ Prediction Saved!')
                         : existingPrediction
                         ? (isAr ? 'تعديل وحفظ التوقع 🎯' : 'Update Prediction 🎯')
-                        : match.predictionFeeCoins
-                        ? (isAr ? `توقع الآن (خصم ${match.predictionFeeCoins} كوينز - الجائزة ${coinsReward} كوينز) 🎯` : `Predict (Fee: ${match.predictionFeeCoins} Coins - Win ${coinsReward}) 🎯`)
-                        : (isAr ? `سجل توقعك الآن (+${coinsReward} كوينز عند صحة النتيجة) 🎯` : `Submit Prediction (+${coinsReward} Coins) 🎯`)}
+                        : coinsReward > 0
+                        ? (isAr ? `توقع الآن مجاناً (الجائزة +${coinsReward} كوينز) 🏆` : `Predict Free (Win +${coinsReward} Coins) 🏆`)
+                        : (isAr ? 'تأكيد وحفظ التوقع مجاناً 🎯' : 'Confirm Free Prediction 🎯')}
                     </span>
                   </button>
 
@@ -1188,12 +1208,12 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
 
                         <div className="space-y-1.5">
                           <h3 className="text-base font-black text-white">
-                            {isAr ? 'هل أنت متأكد من إنفاق 50 كوينز علي التوقع؟' : 'Are you sure you want to spend 50 coins to predict?'}
+                            {isAr ? `هل أنت متأكد من إنفاق ${effectiveFee} كوينز علي التوقع؟` : `Are you sure you want to spend ${effectiveFee} coins to predict?`}
                           </h3>
                           <p className="text-xs text-slate-300 leading-relaxed font-bold">
                             {isAr
-                              ? 'سيتم خصم 50 كوينز من رصيدك فوراً. وفي حال كانت نتيجة توقعك صحيحة تماماً ستكسب 150 كوينز في محفظتك! 🏆'
-                              : '50 coins will be deducted from your wallet. Exact correct score awards you 150 coins! 🏆'}
+                              ? `سيتم خصم ${effectiveFee} كوينز من رصيدك فوراً. وفي حال كانت نتيجة توقعك صحيحة تماماً ستكسب ${coinsReward} كوينز في محفظتك! 🏆`
+                              : `${effectiveFee} coins will be deducted from your wallet. Exact correct score awards you ${coinsReward} coins! 🏆`}
                           </p>
                         </div>
 
@@ -1205,20 +1225,36 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                           </div>
                           <div className="flex items-center justify-between text-rose-300 font-bold">
                             <span>{isAr ? 'رسوم التوقع (خصم):' : 'Prediction Fee:'}</span>
-                            <span className="font-mono font-black text-rose-400">-50 🪙</span>
+                            <span className="font-mono font-black text-rose-400">-{effectiveFee} 🪙</span>
                           </div>
                           <div className="h-px bg-slate-800 my-1" />
                           <div className="flex items-center justify-between text-emerald-300 font-black">
                             <span>{isAr ? 'الجائزة عند الفوز:' : 'Reward on Win:'}</span>
-                            <span className="font-mono font-black text-emerald-400">+150 🪙</span>
+                            <span className="font-mono font-black text-emerald-400">+{coinsReward} 🪙</span>
                           </div>
                         </div>
 
-                        {userPoints < 50 ? (
-                          <div className="p-2.5 bg-rose-950/60 rounded-xl border border-rose-500/40 text-xs font-black text-rose-300">
-                            {isAr
-                              ? `⚠️ رصيدك غير كافٍ (لديك ${userPoints} كوينز، المطلوب 50 كوينز).`
-                              : `⚠️ Insufficient balance (You have ${userPoints} coins, 50 needed).`}
+                        {userPoints < effectiveFee ? (
+                          <div className="p-2.5 bg-rose-950/60 rounded-xl border border-rose-500/40 text-xs font-black text-rose-300 space-y-2">
+                            <div>
+                              {isAr
+                                ? `⚠️ رصيدك غير كافٍ (لديك ${userPoints} كوينز، المطلوب ${effectiveFee} كوينز).`
+                                : `⚠️ Insufficient balance (You have ${userPoints} coins, ${effectiveFee} needed).`}
+                            </div>
+                            {onOpenProSubscriptions && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowFeeConfirmation(false);
+                                  onClose();
+                                  onOpenProSubscriptions();
+                                }}
+                                className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-950 font-black text-xs shadow-md cursor-pointer hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-1.5"
+                              >
+                                <span>👑</span>
+                                <span>{isAr ? 'شحن كوينز فوري (اشتراكات برو)' : 'Recharge Coins (PRO)'}</span>
+                              </button>
+                            )}
                           </div>
                         ) : null}
 
@@ -1231,7 +1267,7 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                           </button>
 
                           <button
-                            disabled={userPoints < 50}
+                            disabled={userPoints < effectiveFee}
                             onClick={() => {
                               setShowFeeConfirmation(false);
                               if (onSavePrediction) {
@@ -1243,12 +1279,12 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                               }, 400);
                             }}
                             className={`flex-1 py-2 px-3 rounded-xl font-black text-xs cursor-pointer active:scale-95 transition-all shadow-md ${
-                              userPoints < 50
+                              userPoints < effectiveFee
                                 ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
                                 : 'bg-gradient-to-r from-amber-500 to-emerald-600 hover:from-amber-400 hover:to-emerald-500 text-white shadow-amber-950/40'
                             }`}
                           >
-                            {isAr ? 'موافق (خصم 50 كوينز)' : 'Confirm (Spend 50)'}
+                            {isAr ? `موافق (خصم ${effectiveFee} كوينز)` : `Confirm (Spend ${effectiveFee})`}
                           </button>
                         </div>
                       </div>
