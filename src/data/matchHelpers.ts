@@ -197,7 +197,7 @@ export function isMatchFinished(match: Match): boolean {
 
   if (kickoffMs) {
     const diffMinutes = Math.floor((Date.now() - kickoffMs) / 60000);
-    if (diffMinutes >= 132) {
+    if (diffMinutes >= 110) {
       return true;
     }
   }
@@ -387,7 +387,7 @@ export function hasLiveOrStartedMatchesToday(matches: Match[]): boolean {
     // 1. In-progress or live
     if (isMatchLive(m)) return true;
 
-    // 2. Upcoming match within 60 minutes of kickoff (official lineups published)
+    // 2. Match has reached kickoff time and is underway (starting with the 1st match of the day)
     let kickoffMs = m.kickoffTimeMs;
     if (!kickoffMs && m.date && m.time) {
       try {
@@ -403,12 +403,8 @@ export function hasLiveOrStartedMatchesToday(matches: Match[]): boolean {
 
     if (kickoffMs) {
       const diffMs = kickoffMs - now;
-      // Kickoff has reached/passed and match is not finished yet
+      // Kickoff has reached or passed and match is not finished yet
       if (diffMs <= 0 && diffMs > -135 * 60 * 1000 && m.status !== 'FINISHED' && !m.pointsDistributed) {
-        return true;
-      }
-      // Within 60 minutes before kickoff (lineup release window)
-      if (diffMs > 0 && diffMs <= 60 * 60 * 1000) {
         return true;
       }
     }

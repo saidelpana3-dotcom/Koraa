@@ -561,6 +561,136 @@ export const CURATED_MATCH_SIMULATION_PROFILES: Record<string, MatchSimulationPr
       awayCorners: 2,
     },
   },
+
+  // 6. Manchester City 5 - 0 Norwich City (2026-09-17) - EFL Cup
+  m_efl_mancity_norwich_sep17: {
+    targetHomeScore: 5,
+    targetAwayScore: 0,
+    events: [
+      {
+        minute: 29,
+        type: 'GOAL',
+        team: 'HOME',
+        player: 'Floyd Samba',
+        playerAr: 'فلويد سامبا',
+        score: '1 - 0',
+      },
+      {
+        minute: 32,
+        type: 'GOAL',
+        team: 'HOME',
+        player: 'Rayan Cherki',
+        playerAr: 'ريان شرقي',
+        score: '2 - 0',
+      },
+      {
+        minute: 48,
+        type: 'GOAL',
+        team: 'HOME',
+        player: 'Allan',
+        playerAr: 'ألان',
+        score: '3 - 0',
+      },
+      {
+        minute: 54,
+        type: 'GOAL',
+        team: 'HOME',
+        player: 'Floyd Samba',
+        playerAr: 'فلويد سامبا',
+        score: '4 - 0',
+      },
+      {
+        minute: 90,
+        type: 'GOAL',
+        team: 'HOME',
+        player: 'R. McAidoo',
+        playerAr: 'ريان ماكايدو',
+        score: '5 - 0',
+      },
+    ],
+    stats: {
+      homeShots: 18,
+      awayShots: 4,
+      homeShotsOnTarget: 9,
+      awayShotsOnTarget: 1,
+      homePossession: 68,
+      awayPossession: 32,
+      homeFouls: 7,
+      awayFouls: 11,
+      homeCorners: 8,
+      awayCorners: 2,
+    },
+  },
+
+  // 7. Trabzonspor vs Galatasaray SK (2026-09-19) - Super Lig (4 - 0)
+  m_superlig_trabzonspor_galatasaray_sep19: {
+    targetHomeScore: 4,
+    targetAwayScore: 0,
+    events: [
+      {
+        minute: 4,
+        type: 'GOAL',
+        team: 'HOME',
+        player: 'Mohamed Salah',
+        playerAr: 'محمد صلاح',
+        score: '1 - 0',
+        note: 'تسديدة قوية في المرمى (4\')',
+        noteAr: 'تسديدة قوية في المرمى (4\')',
+      },
+      {
+        minute: 39,
+        type: 'GOAL',
+        team: 'HOME',
+        player: 'Noah Saviolo',
+        playerAr: 'نواه سافيولو',
+        score: '2 - 0',
+        note: 'هدف ملعوب بعد تمريرة عرضية (39\')',
+        noteAr: 'هدف ملعوب بعد تمريرة عرضية (39\')',
+      },
+      {
+        minute: 44,
+        type: 'GOAL',
+        team: 'HOME',
+        player: 'Mohamed Salah',
+        playerAr: 'محمد صلاح',
+        score: '3 - 0',
+        note: 'هدف ثالث رائع قبل نهاية الشوط الأول (44\')',
+        noteAr: 'هدف ثالث رائع قبل نهاية الشوط الأول (44\')',
+      },
+      {
+        minute: 80,
+        type: 'GOAL',
+        team: 'HOME',
+        player: 'Mohamed Salah',
+        playerAr: 'محمد صلاح',
+        score: '4 - 0',
+        note: 'هاتريك تاريخي للنجم محمد صلاح بتسديدة لا تصد (80\')',
+        noteAr: 'هاتريك تاريخي للنجم محمد صلاح بتسديدة لا تصد (80\')',
+      },
+      {
+        minute: 87,
+        type: 'RED_CARD',
+        team: 'AWAY',
+        player: 'Chimuanya Ugochukwu',
+        playerAr: 'شيموانيا أوجوشوكو',
+        score: '4 - 0',
+        note: 'بطاقة حمراء مباشرة بعد تدخل عنيف (87\')',
+        noteAr: 'بطاقة حمراء مباشرة بعد تدخل عنيف (87\')',
+      },
+    ],
+    stats: {
+      homeShots: 15,
+      awayShots: 7,
+      homeShotsOnTarget: 8,
+      awayShotsOnTarget: 2,
+      homePossession: 51,
+      awayPossession: 49,
+      homeFouls: 10,
+      awayFouls: 13,
+      homeCorners: 7,
+      awayCorners: 4,
+    },
+  },
 };
 
 /**
@@ -739,13 +869,15 @@ export function computeSimulatedMatchState(
   // 1. If match has already officially finished in master records or has no kickoff
   if (match.status === 'FINISHED' || match.isFinished === true) {
     const finalEvents = (Array.isArray(match.events) && match.events.length > 0) ? match.events : profile.events;
+    const finalHomeScore = (typeof match.homeScore === 'number' && match.homeScore > 0) ? match.homeScore : profile.targetHomeScore;
+    const finalAwayScore = (typeof match.awayScore === 'number' && match.awayScore > 0) ? match.awayScore : profile.targetAwayScore;
     return {
       status: 'FINISHED',
       minute: isArabic ? 'انتهت' : 'FT',
       playedMinute: 90,
       isFinished: true,
-      homeScore: typeof match.homeScore === 'number' ? match.homeScore : profile.targetHomeScore,
-      awayScore: typeof match.awayScore === 'number' ? match.awayScore : profile.targetAwayScore,
+      homeScore: finalHomeScore,
+      awayScore: finalAwayScore,
       goalDetected: false,
       scoringTeam: null,
       lastGoal: null,
@@ -801,15 +933,17 @@ export function computeSimulatedMatchState(
     };
   }
 
-  // 3. FINISHED: Full match completed (after 132 minutes including halftime and stoppage)
-  if (rawElapsed >= 132) {
+  // 3. FINISHED: Full match completed (after 110 minutes including halftime and stoppage)
+  if (rawElapsed >= 110) {
+    const finalHomeScore = typeof match.homeScore === 'number' && match.homeScore > 0 ? match.homeScore : profile.targetHomeScore;
+    const finalAwayScore = typeof match.awayScore === 'number' && match.awayScore > 0 ? match.awayScore : profile.targetAwayScore;
     return {
       status: 'FINISHED',
       minute: isArabic ? 'انتهت' : 'FT',
       playedMinute: 90,
       isFinished: true,
-      homeScore: profile.targetHomeScore,
-      awayScore: profile.targetAwayScore,
+      homeScore: finalHomeScore,
+      awayScore: finalAwayScore,
       goalDetected: false,
       scoringTeam: null,
       lastGoal: profile.events.filter(e => e.type === 'GOAL').slice(-1)[0] || null,
@@ -823,25 +957,25 @@ export function computeSimulatedMatchState(
   let minuteDisplay = "1'";
   let liveStatus: 'LIVE' | 'HALF_TIME' = 'LIVE';
 
-  if (rawElapsed <= 4) {
+  if (rawElapsed <= 2) {
     playedMinute = 1;
     minuteDisplay = "1'";
-  } else if (rawElapsed <= 50) {
-    playedMinute = Math.min(45, Math.max(1, rawElapsed - 3));
+  } else if (rawElapsed <= 47) {
+    playedMinute = Math.min(45, Math.max(1, rawElapsed));
     minuteDisplay = `${playedMinute}'`;
-  } else if (rawElapsed <= 55) {
+  } else if (rawElapsed <= 50) {
     playedMinute = 45;
-    minuteDisplay = `45+${Math.max(1, rawElapsed - 50)}'`;
-  } else if (rawElapsed <= 72) {
+    minuteDisplay = `45+${Math.max(1, rawElapsed - 45)}'`;
+  } else if (rawElapsed <= 65) {
     playedMinute = 45;
     minuteDisplay = isArabic ? 'بين الشوطين (HT)' : 'Half Time';
     liveStatus = 'HALF_TIME';
-  } else if (rawElapsed <= 122) {
-    playedMinute = Math.min(90, 46 + Math.floor((rawElapsed - 72) * (44 / 50)));
+  } else if (rawElapsed <= 105) {
+    playedMinute = Math.min(90, 46 + (rawElapsed - 65));
     minuteDisplay = `${playedMinute}'`;
   } else {
     playedMinute = 90;
-    minuteDisplay = `90+${Math.min(9, Math.max(1, rawElapsed - 122))}'`;
+    minuteDisplay = `90+${Math.min(9, Math.max(1, rawElapsed - 105))}'`;
   }
 
   // Filter events up to current played minute
@@ -855,6 +989,14 @@ export function computeSimulatedMatchState(
     if (g.team === 'HOME') currentHomeScore++;
     else if (g.team === 'AWAY') currentAwayScore++;
   });
+
+  // Never drop below existing score if match already had goals in live feed
+  if (typeof match.homeScore === 'number' && match.homeScore > currentHomeScore) {
+    currentHomeScore = match.homeScore;
+  }
+  if (typeof match.awayScore === 'number' && match.awayScore > currentAwayScore) {
+    currentAwayScore = match.awayScore;
+  }
 
   // Goal alert detection: if a goal occurred in the last 3 minutes of match time
   const lastGoal = goalEvents.length > 0 ? goalEvents[goalEvents.length - 1] : null;

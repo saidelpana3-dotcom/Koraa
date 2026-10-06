@@ -1,23 +1,27 @@
 import React from 'react';
-import { Trophy, Newspaper, Heart, Gift, UserCheck, LogIn, Bell, ArrowRight, ArrowLeft, Sun, Moon, Radio, Sparkles, Crown, DollarSign, Wallet, X } from 'lucide-react';
+import { Trophy, Heart, Gift, UserCheck, LogIn, Sun, Moon, Sparkles, X } from 'lucide-react';
 import { Language, ThemeMode } from '../types';
 import { KORA_LOGO_BASE64 } from '../assets/logoBase64';
+import { OrangeDiamondIcon } from './OrangeDiamondIcon';
+
+export type MainAppTab = 'matches' | 'tournaments' | 'games' | 'prizes' | 'account' | 'favorites';
 
 interface HeaderProps {
   language: Language;
   onLanguageChange?: (lang: Language) => void;
   theme?: ThemeMode;
   onToggleTheme?: () => void;
-  activeTab: 'matches' | 'tournaments' | 'prizes' | 'account' | 'ai' | 'news' | 'favorites';
-  setActiveTab: (tab: 'matches' | 'tournaments' | 'prizes' | 'account' | 'ai' | 'news' | 'favorites') => void;
+  activeTab: MainAppTab;
+  setActiveTab: (tab: MainAppTab) => void;
   onClosePage?: () => void;
-  previousTab?: 'matches' | 'tournaments' | 'prizes' | 'account' | 'ai' | 'news' | 'favorites';
+  previousTab?: MainAppTab;
   stadiumAudioActive?: boolean;
   onToggleStadiumAudio?: () => void;
   searchQuery?: string;
   setSearchQuery?: (q: string) => void;
   favoriteCount: number;
   userPoints?: number;
+  userDiamonds?: number;
   userDisplayName?: string | null;
   onSignIn?: () => void;
   onInstallApp?: () => void;
@@ -36,17 +40,11 @@ export const Header: React.FC<HeaderProps> = ({
   activeTab,
   setActiveTab,
   onClosePage,
-  previousTab = 'matches',
-  searchQuery = '',
-  setSearchQuery,
   userPoints = 0,
+  userDiamonds = 0,
   userDisplayName,
   onSignIn,
-  activeSubscriptionsCount = 0,
-  onOpenNotificationCenter,
   onOpenCoinsBreakdown,
-  onFootballSync,
-  isSyncingFootball = false,
   onOpenProSubscriptions,
 }) => {
   const isAr = language === 'ar';
@@ -56,14 +54,12 @@ export const Header: React.FC<HeaderProps> = ({
     switch (tab) {
       case 'tournaments':
         return { title: isAr ? 'البطولات والجوائز 🏆' : 'Featured Leagues & Tournaments', icon: Trophy };
+      case 'games':
+        return { title: isAr ? 'ألعاب كورة (Games ⚽)' : 'Kora Games ⚽', icon: Trophy };
       case 'prizes':
         return { title: isAr ? 'الكوينز والجوائز والكاش 🎁' : 'Coins & Cash Rewards', icon: Gift };
       case 'account':
         return { title: isAr ? 'حسابي الشخصي' : 'My Account', icon: UserCheck };
-      case 'ai':
-        return { title: isAr ? 'المحلل الذكي (كورة AI)' : 'Kora AI Analyst', icon: Trophy };
-      case 'news':
-        return { title: isAr ? 'الأخبار والانتقالات' : 'News & Transfers', icon: Newspaper };
       case 'favorites':
         return { title: isAr ? 'المباريات المفضلة' : 'Favorite Matches', icon: Heart };
       default:
@@ -138,20 +134,36 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Action Icons (Theme toggle, Notifications, Coins & Profile) */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            {/* Coins Counter Quick View Button */}
-            <button
-              type="button"
-              onClick={onOpenCoinsBreakdown || (() => setActiveTab('prizes'))}
-              title={isAr ? `رصيد الكوينز: ${userPoints} كوينز (اضغط لعرض تفاصيل الأرباح والمباريات)` : `Coins: ${userPoints} (Click to view earnings breakdown)`}
-              className={`flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-2xl border transition-all active:scale-95 cursor-pointer shadow-sm ${
-                isDark
-                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25 hover:border-amber-400'
-                  : 'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100 hover:border-amber-400'
-              }`}
-            >
-              <span className="text-xs sm:text-sm">🪙</span>
-              <span className="font-mono text-xs sm:text-sm font-black">{userPoints}</span>
-            </button>
+            {/* Stacked Coins Counter & Diamonds Counter (تحت عداد الكوينز عداد للماسات) */}
+            <div className="flex flex-col items-stretch gap-1">
+              <button
+                type="button"
+                onClick={onOpenCoinsBreakdown || (() => setActiveTab('prizes'))}
+                title={isAr ? `رصيد الكوينز: ${userPoints} كوينز` : `Coins: ${userPoints}`}
+                className={`flex items-center justify-center gap-1 px-2 sm:px-2.5 py-0.5 rounded-xl border transition-all active:scale-95 cursor-pointer shadow-xs ${
+                  isDark
+                    ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25 hover:border-amber-400'
+                    : 'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100 hover:border-amber-400'
+                }`}
+              >
+                <span className="text-[11px] sm:text-xs">🪙</span>
+                <span className="font-mono text-[11px] sm:text-xs font-black">{userPoints}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('games')}
+                title={isAr ? `رصيد الماسات البرتقالية: ${userDiamonds} ماسة (العب Games لربح الماسات)` : `Orange Diamonds: ${userDiamonds} (Play Games to earn)`}
+                className={`flex items-center justify-center gap-1 px-2 sm:px-2.5 py-0.5 rounded-xl border transition-all active:scale-95 cursor-pointer shadow-xs ${
+                  isDark
+                    ? 'bg-orange-500/20 border-orange-500/50 text-orange-300 hover:bg-orange-500/30 hover:border-orange-400'
+                    : 'bg-orange-50 border-orange-400 text-orange-900 hover:bg-orange-100 hover:border-orange-500'
+                }`}
+              >
+                <OrangeDiamondIcon className="w-3.5 h-3.5" />
+                <span className="font-mono text-[11px] sm:text-xs font-black tabular-nums">{userDiamonds}</span>
+              </button>
+            </div>
 
             {/* Theme Toggle Quick Action Button */}
             {onToggleTheme && (

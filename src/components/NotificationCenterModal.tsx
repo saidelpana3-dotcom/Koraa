@@ -20,7 +20,7 @@ interface NotificationCenterModalProps {
   notificationsLog: PushNotificationLog[];
   onClose: () => void;
   onSignInRequired: () => void;
-  onOpenMatchDetails?: (matchId: string, tab?: 'lineup' | 'stats' | 'events' | 'ai' | 'predict') => void;
+  onOpenMatchDetails?: (matchId: string, tab?: 'lineup' | 'stats' | 'events' | 'predict') => void;
 }
 
 const REMINDER_OPTIONS = [
@@ -356,7 +356,14 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                           {isAr ? log.titleAr || log.title : log.title}
                         </span>
                         <span className="text-[10px] font-mono text-slate-400">
-                          {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {(() => {
+                            try {
+                              const d = new Date(log.timestamp);
+                              return isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                            } catch (_) {
+                              return '';
+                            }
+                          })()}
                         </span>
                       </div>
 

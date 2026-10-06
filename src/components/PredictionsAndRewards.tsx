@@ -30,12 +30,15 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { isMatchRemovedGlobally } from '../utils/predictionEvaluator';
+import { OrangeDiamondIcon } from './OrangeDiamondIcon';
 
 interface PredictionsAndRewardsProps {
   matches: Match[];
   language: Language;
   userPoints: number;
   setUserPoints: React.Dispatch<React.SetStateAction<number>>;
+  userDiamonds?: number;
+  onOpenGames?: () => void;
   userId: string;
   userDisplayName: string;
   theme?: ThemeMode;
@@ -132,6 +135,8 @@ export const PredictionsAndRewards: React.FC<PredictionsAndRewardsProps> = ({
   language,
   userPoints,
   setUserPoints,
+  userDiamonds = 0,
+  onOpenGames,
   userId,
   userDisplayName,
   theme = 'light',
@@ -142,6 +147,7 @@ export const PredictionsAndRewards: React.FC<PredictionsAndRewardsProps> = ({
   const isDark = theme === 'dark';
   const isGuest = !userId || userId === 'guest-123' || userId.startsWith('guest');
   const displayCoins = isGuest ? 0 : userPoints;
+  const displayDiamonds = isGuest ? 0 : userDiamonds;
 
   const [selectedPrize, setSelectedPrize] = useState<Prize | null>(null);
   const [claimSuccess, setClaimSuccess] = useState<string | null>(null);
@@ -550,7 +556,7 @@ export const PredictionsAndRewards: React.FC<PredictionsAndRewardsProps> = ({
                 <span>{isAr ? 'رصيدك المتوفر من الكوينز' : 'Your Available Coins'}</span>
                 <span className="text-[10px] underline text-amber-500 group-hover:translate-x-0.5 transition-transform">⚡</span>
               </div>
-              <div className="text-2xl sm:text-3xl font-black font-mono text-amber-600 dark:text-amber-400 flex items-center justify-center gap-1.5 mt-0.5">
+              <div className="text-2xl sm:text-3xl font-black font-mono text-amber-600 dark:text-amber-400 flex items-center justify-center gap-1.5 mt-0.5 tabular-nums">
                 <span className="text-xl">🪙</span>
                 <span>{displayCoins}</span>
                 <span className="text-xs font-black text-amber-700 dark:text-amber-300">{isAr ? 'كوينز' : 'Coins'}</span>
@@ -558,6 +564,28 @@ export const PredictionsAndRewards: React.FC<PredictionsAndRewardsProps> = ({
               <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold block mt-0.5 group-hover:underline">
                 {isAr ? 'اضغط لكشف المباريات الرابحة 🔍' : 'Click for winnings breakdown 🔍'}
               </span>
+            </div>
+
+            {/* Orange Diamonds Counter Directly Under Coins Balance */}
+            <div
+              onClick={onOpenGames}
+              className={`border-2 px-4 py-2 rounded-2xl text-center min-w-[200px] shadow-sm transition-all active:scale-95 flex items-center justify-between gap-2 ${
+                onOpenGames ? 'cursor-pointer' : ''
+              } ${
+                isDark
+                  ? 'bg-orange-950/60 border-orange-500/60 hover:border-orange-400 text-orange-300'
+                  : 'bg-orange-50 border-orange-300 hover:border-orange-400 text-orange-900'
+              }`}
+              title={isAr ? 'اضغط للانتقال إلى صفحة الألعاب (Games) وربح الماسات البرتقالية' : 'Click to open Games and earn Orange Diamonds'}
+            >
+              <span className="text-[11px] font-black flex items-center gap-1.5">
+                <OrangeDiamondIcon className="w-4 h-4" />
+                <span>{isAr ? 'رصيد الماسات البرتقالية:' : 'Orange Diamonds:'}</span>
+              </span>
+              <div className="font-mono text-base sm:text-lg font-black text-orange-500 dark:text-orange-400 flex items-center gap-1 tabular-nums">
+                <span>{displayDiamonds}</span>
+                <span className="text-[10px] font-black">{isAr ? 'ماسة' : 'Gems'}</span>
+              </div>
             </div>
 
             {/* Predictions Progress Bar: عدد الماتشات اللي اتوقعتها من أصل كام */}

@@ -205,23 +205,6 @@ export const StandingsView: React.FC<StandingsViewProps> = ({
     return null;
   };
 
-  // Auto-distribute rank reward coins (+50 coins) to user's wallet balance
-  useEffect(() => {
-    const userKey = currentUserId || 'guest';
-    const autoDistKey = `kora_coins_auto_distributed_2am_${userKey}`;
-    if (!localStorage.getItem(autoDistKey) && setUserPoints) {
-      localStorage.setItem(autoDistKey, 'true');
-      setUserPoints((prev) => {
-        const next = prev + 50;
-        localStorage.setItem('kora_user_points', next.toString());
-        if (currentUserId) {
-          localStorage.setItem(`kora_user_points_${currentUserId}`, next.toString());
-        }
-        return next;
-      });
-    }
-  }, [currentUserId, setUserPoints]);
-
   const myUserObj = usersList.find((u) => u.displayName === currentUserDisplayName);
 
   return (

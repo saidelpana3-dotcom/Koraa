@@ -358,8 +358,8 @@ export const CoinsHistoryModal: React.FC<CoinsHistoryModalProps> = ({
       const matchId = pred.matchId;
       const targetMatch = matches.find((m) => m.id === matchId);
       const catalogEntry = FINISHED_MATCHES_CATALOG[matchId];
-      const actualHome = targetMatch?.homeScore ?? catalogEntry?.homeScore ?? pred.matchHomeScore;
-      const actualAway = targetMatch?.awayScore ?? catalogEntry?.awayScore ?? pred.matchAwayScore;
+      const actualHome = catalogEntry?.homeScore ?? targetMatch?.homeScore ?? pred.matchHomeScore;
+      const actualAway = catalogEntry?.awayScore ?? targetMatch?.awayScore ?? pred.matchAwayScore;
       const reward = pred.coinsEarned || pred.pointsEarned || targetMatch?.customCoinsReward || 50;
       const homeAr = targetMatch?.homeTeamAr || catalogEntry?.homeTeamAr || pred.matchHomeTeamAr || 'المضيف';
       const awayAr = targetMatch?.awayTeamAr || catalogEntry?.awayTeamAr || pred.matchAwayTeamAr || 'الضيف';
@@ -448,7 +448,7 @@ export const CoinsHistoryModal: React.FC<CoinsHistoryModalProps> = ({
   // 4. Build Bonus Transactions (+) like daily login gift
   const bonusTransactions: CoinTransactionItem[] = [];
   try {
-    const userKey = user?.uid || user?.id || localStorage.getItem('kora_user_numeric_id') || localStorage.getItem('kora_guest_numeric_id') || 'guest';
+    const userKey = user?.uid || user?.id || 'guest';
     const histKey = `kora_coins_history_${userKey}`;
     const rawHist = localStorage.getItem(histKey);
     if (rawHist) {

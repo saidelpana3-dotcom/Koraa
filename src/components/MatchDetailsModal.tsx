@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Match, Language } from '../types';
 import { PitchView } from './PitchView';
 import { TeamLogo } from './TeamLogo';
+import { OrangeDiamondIcon } from './OrangeDiamondIcon';
 import { generateFinishedMatchStats } from '../lib/matchStatsGenerator';
 import { isMatchLive, getMatchPlayedMinute, getMatchCurrentMinuteNumber } from '../data/matchHelpers';
 import { getOfficialTeamRoster } from '../data/teamRosters';
@@ -26,7 +27,7 @@ import {
 
 interface MatchDetailsModalProps {
   match: Match;
-  initialTab?: 'lineup' | 'stats' | 'events' | 'ai' | 'predict';
+  initialTab?: 'lineup' | 'stats' | 'events' | 'predict';
   onClose: () => void;
   language: Language;
   onVotePrediction: (matchId: string, choice: 'HOME' | 'DRAW' | 'AWAY') => void;
@@ -35,6 +36,8 @@ interface MatchDetailsModalProps {
   isSubscribed?: boolean;
   onOpenSubscribeModal?: (match: Match) => void;
   userPoints?: number;
+  userDiamonds?: number;
+  onOpenGames?: () => void;
   onOpenProSubscriptions?: () => void;
   isFreePrediction?: boolean;
   remainingFreePredictions?: number;
@@ -51,6 +54,8 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
   isSubscribed,
   onOpenSubscribeModal,
   userPoints = 0,
+  userDiamonds = 0,
+  onOpenGames,
   onOpenProSubscriptions,
   isFreePrediction = false,
   remainingFreePredictions = 0,
@@ -60,7 +65,7 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
   const isFinished = match.status === 'FINISHED' || match.pointsDistributed === true;
   const isUpcoming = !isFinished && !isLive && match.status === 'UPCOMING' && (!match.kickoffTimeMs || Date.now() < match.kickoffTimeMs);
   const playedMinute = getMatchPlayedMinute(match, isAr);
-  const [activeTab, setActiveTab] = useState<'lineup' | 'stats' | 'events' | 'ai' | 'predict'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'lineup' | 'stats' | 'events' | 'predict'>(initialTab);
   const [showFeeConfirmation, setShowFeeConfirmation] = useState<boolean>(false);
 
   // Lock background body scroll while modal is open
@@ -73,10 +78,6 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
     };
   }, []);
 
-  // AI Tactical Analysis State
-  const [aiReport, setAiReport] = useState<any | null>(null);
-  const [aiLoading, setAiLoading] = useState<boolean>(false);
-  const [aiError, setAiError] = useState<string | null>(null);
   const [userVoted, setUserVoted] = useState<'HOME' | 'DRAW' | 'AWAY' | null>(null);
 
   // Exact Score Prediction state
@@ -139,39 +140,6 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
     }
   }, [existingPrediction, match.id]);
 
-  useEffect(() => {
-    if (activeTab === 'ai' && !aiReport && !aiLoading) {
-      fetchAITacticalReport();
-    }
-  }, [activeTab, match.id]);
-
-  const fetchAITacticalReport = async () => {
-    setAiLoading(true);
-    setAiError(null);
-    try {
-      const res = await fetch('/api/ai/tactics', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          homeTeam: match.homeTeam,
-          awayTeam: match.awayTeam,
-          league: match.leagueName,
-          language,
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setAiReport(data);
-      } else {
-        setAiError(data.error || 'Failed to generate AI analysis.');
-      }
-    } catch (err: any) {
-      setAiError(err.message || 'Error communicating with AI server.');
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
   // Prediction totals calculation
   const homeVotes = match?.prediction?.homeVotes || 0;
   const drawVotes = match?.prediction?.drawVotes || 0;
@@ -215,7 +183,7 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-base sm:text-lg">{match.leagueIcon || '🏆'}</span>
             <div className="flex flex-col min-w-0">
-              <span className="text-xs sm:text-sm font-black text-white truncate">
+              <span className="text-[11px] sm:text-xs font-black text-white break-words whitespace-normal leading-tight">
                 {isAr ? match.leagueNameAr : match.leagueName}
               </span>
               <span className="text-[10px] text-slate-400 font-bold truncate">
@@ -288,9 +256,9 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
         <div className="relative px-3 py-2.5 sm:px-5 sm:py-3.5 bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950/40 border-b border-slate-800 text-white shrink-0">
 
           {/* League name */}
-          <div className="flex flex-wrap items-center justify-center gap-1.5 text-[10px] sm:text-xs font-semibold text-emerald-400 mb-1.5 pe-14 rtl:pe-0 rtl:ps-14 sm:pe-0 sm:rtl:ps-0">
-            <span className="text-xs sm:text-sm">{match.leagueIcon || '🏆'}</span>
-            <span className="truncate max-w-[120px] sm:max-w-none">{isAr ? match.leagueNameAr : match.leagueName}</span>
+          <div className="flex flex-wrap items-center justify-center gap-1.5 text-[9.5px] sm:text-[11px] font-semibold text-emerald-400 mb-1.5 pe-14 rtl:pe-0 rtl:ps-14 sm:pe-0 sm:rtl:ps-0 text-center">
+            <span className="text-xs sm:text-sm shrink-0">{match.leagueIcon || '🏆'}</span>
+            <span className="break-words whitespace-normal leading-tight">{isAr ? match.leagueNameAr : match.leagueName}</span>
             <span className="text-slate-600">•</span>
             <span className="text-slate-300 font-bold">{isAr ? (match.dateAr || match.date) : match.date}{match.status === 'UPCOMING' ? ` ، ${match.time}` : ''}</span>
           </div>
@@ -340,8 +308,8 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
               {/* User prediction or unpredicted notice right under live or final score */}
               {existingPrediction && !isUpcoming ? (
                 <div className={`mt-1.5 px-2.5 py-0.5 rounded-lg text-[9px] sm:text-[10px] font-black border shadow-xs whitespace-nowrap flex items-center justify-center gap-1.5 ${
-                  match.status === 'FINISHED'
-                    ? (match.homeScore === existingPrediction.predictedHomeScore && match.awayScore === existingPrediction.predictedAwayScore)
+                  isFinished
+                    ? (Number(match.homeScore) === Number(existingPrediction.predictedHomeScore) && Number(match.awayScore) === Number(existingPrediction.predictedAwayScore))
                       ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 ring-1 ring-emerald-500/40'
                       : 'bg-slate-900/90 text-slate-300 border-slate-700'
                     : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
@@ -351,8 +319,11 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                   <span className="font-mono font-black">{existingPrediction.predictedHomeScore}</span>
                   <span className="text-slate-400 font-bold">-</span>
                   <span className="font-mono font-black">{existingPrediction.predictedAwayScore}</span>
-                  {match.status === 'FINISHED' && match.homeScore === existingPrediction.predictedHomeScore && match.awayScore === existingPrediction.predictedAwayScore && (
-                    <span className="text-emerald-400 font-bold">✓</span>
+                  {isFinished && Number(match.homeScore) === Number(existingPrediction.predictedHomeScore) && Number(match.awayScore) === Number(existingPrediction.predictedAwayScore) && (
+                    <span className="text-emerald-400 font-bold">✓ {isAr ? 'أصبت' : 'Exact'}</span>
+                  )}
+                  {isFinished && (Number(match.homeScore) !== Number(existingPrediction.predictedHomeScore) || Number(match.awayScore) !== Number(existingPrediction.predictedAwayScore)) && (
+                    <span className="text-slate-400 font-bold">❌</span>
                   )}
                 </div>
               ) : match.status !== 'UPCOMING' ? (
@@ -432,21 +403,6 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
           >
             <Activity className="w-3.5 h-3.5" />
             <span>{isAr ? 'الإحصائيات' : 'Stats'}</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab('ai');
-              if (!aiReport && !aiLoading) fetchAITacticalReport();
-            }}
-            className={`py-2 px-2 sm:py-2.5 sm:px-3 border-b-2 whitespace-nowrap transition-all flex items-center gap-1 cursor-pointer active:scale-95 ${
-              activeTab === 'ai'
-                ? 'border-teal-400 text-teal-300 font-bold'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5 text-teal-400" />
-            <span>{isAr ? 'كورة AI' : 'Kora AI'}</span>
           </button>
 
           <button
@@ -824,126 +780,14 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
             );
           })()}
 
-          {/* TAB 4: AI Tactical Analysis */}
-          {activeTab === 'ai' && (
-            <div className="space-y-6 max-w-2xl mx-auto">
-              <div className="p-4 bg-gradient-to-r from-teal-950/60 to-emerald-950/60 rounded-2xl border border-teal-500/40 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-teal-500/20 flex items-center justify-center text-teal-300">
-                    <Sparkles className="w-6 h-6 animate-pulse" />
-                  </div>
-                  <div>
-                    <h4 className="font-extrabold text-white text-base">
-                      {isAr ? 'تحليل كورة التكتيكي الذكي (Gemini)' : 'Kora AI Match Engine'}
-                    </h4>
-                    <p className="text-xs text-teal-300/80">
-                      {isAr ? 'رؤى تكتيكية مدعومة بذكاء جيميناي الاصطناعي' : 'Powered by Gemini AI Model'}
-                    </p>
-                  </div>
-                </div>
-
-                <button
-                  onClick={fetchAITacticalReport}
-                  disabled={aiLoading}
-                  className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white rounded-lg text-xs font-bold transition-all disabled:opacity-50"
-                >
-                  {aiLoading ? (isAr ? 'جاري التحليل...' : 'Analyzing...') : (isAr ? 'تحديث التحليل' : 'Re-analyze')}
-                </button>
-              </div>
-
-              {aiLoading && (
-                <div className="py-12 flex flex-col items-center justify-center gap-3 text-teal-300">
-                  <Loader2 className="w-8 h-8 animate-spin" />
-                  <p className="text-xs font-semibold">
-                    {isAr ? 'جاري قراءة الخريطة الحرارية والخطط التكتيكية...' : 'Processing tactical formations & xG metrics...'}
-                  </p>
-                </div>
-              )}
-
-              {aiError && (
-                <div className="p-4 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs">
-                  {aiError}
-                </div>
-              )}
-
-              {aiReport && !aiLoading && (
-                <div className="space-y-4 text-xs sm:text-sm">
-                  {/* Overview */}
-                  <div className="p-4 bg-slate-950 rounded-xl border border-slate-800">
-                    <h5 className="font-bold text-emerald-400 mb-1 flex items-center gap-1.5">
-                      <Flame className="w-4 h-4" />
-                      <span>{isAr ? 'السيناريو والأسلوب التكتيكي' : 'Tactical Overview'}</span>
-                    </h5>
-                    <p className="text-slate-300 leading-relaxed">
-                      {typeof aiReport.tacticalOverview === 'object'
-                        ? JSON.stringify(aiReport.tacticalOverview)
-                        : String(aiReport.tacticalOverview || '')}
-                    </p>
-                  </div>
-
-                  {/* Key Matchups */}
-                  {Array.isArray(aiReport.keyMatchups) && (
-                    <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
-                      <h5 className="font-bold text-amber-400 mb-2">
-                        {isAr ? 'أهم 3 مواجهات ثنائية حاسمة:' : 'Key Individual Duels:'}
-                      </h5>
-                      <ul className="space-y-2">
-                        {aiReport.keyMatchups.map((m: any, i: number) => {
-                          let text = '';
-                          if (typeof m === 'string') {
-                            text = m;
-                          } else if (typeof m === 'object' && m !== null) {
-                            if (m.matchup && m.description) {
-                              text = `${m.matchup}: ${m.description}`;
-                            } else if (m.matchup) {
-                              text = m.matchup;
-                            } else if (m.players || m.player1) {
-                              text = `${m.players || `${m.player1} vs ${m.player2}`}${m.description ? `: ${m.description}` : ''}`;
-                            } else {
-                              text = Object.values(m).join(' - ');
-                            }
-                          } else {
-                            text = String(m);
-                          }
-                          return (
-                            <li key={i} className="flex items-start gap-2 text-slate-300 bg-slate-900/80 p-2 rounded-lg border border-slate-800">
-                              <span className="text-amber-400 font-bold">•</span>
-                              <span>{text}</span>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  )}
-
-                  {/* Predicted Outcome */}
-                  <div className="p-4 bg-slate-950 rounded-xl border border-slate-800">
-                    <h5 className="font-bold text-teal-400 mb-1">
-                      {isAr ? 'التوقع والتأثير التكتيكي (xG Factor)' : 'Predicted Outcome & X-Factor'}
-                    </h5>
-                    <p className="text-slate-300 mb-2">
-                      {typeof aiReport.predictedOutcome === 'object'
-                        ? JSON.stringify(aiReport.predictedOutcome)
-                        : String(aiReport.predictedOutcome || '')}
-                    </p>
-                    {aiReport.xGFactor && (
-                      <div className="mt-2 p-2.5 rounded bg-teal-500/10 border border-teal-500/20 text-teal-300 font-semibold text-xs">
-                        🔑 {typeof aiReport.xGFactor === 'object' ? JSON.stringify(aiReport.xGFactor) : String(aiReport.xGFactor)}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* TAB 5: Fan Predictions & Exact Score Entry */}
+          {/* TAB 4: Fan Predictions & Exact Score Entry */}
           {activeTab === 'predict' && (() => {
             const isFinished = match.status === 'FINISHED';
             const isStarted = match.status === 'LIVE' || match.status === 'HALF_TIME' || (match.kickoffTimeMs ? Date.now() >= match.kickoffTimeMs : false);
             const isPredictionLocked = isFinished || isStarted || match.isPredictionClosed;
-            const coinsReward = typeof match.customCoinsReward === 'number' ? match.customCoinsReward : 0;
-            const effectiveFee = 0;
+            const coinsReward = typeof match.customCoinsReward === 'number' && match.customCoinsReward > 0 ? match.customCoinsReward : 50;
+            const DIAMOND_PREDICTION_FEE = 50;
+            const effectiveFee = existingPrediction ? 0 : DIAMOND_PREDICTION_FEE;
 
             // Popular community score distribution
             const scoreDistribution = [
@@ -1007,15 +851,13 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                         </div>
                       </div>
                       <span className={`text-[10px] px-2 py-0.5 rounded-full font-black ${
-                        (match.homeScore === existingPrediction.predictedHomeScore && match.awayScore === existingPrediction.predictedAwayScore)
+                        (Number(match.homeScore) === Number(existingPrediction.predictedHomeScore) && Number(match.awayScore) === Number(existingPrediction.predictedAwayScore))
                           ? 'bg-emerald-500 text-white'
                           : 'bg-slate-800 text-slate-400'
                       }`}>
-                        {(match.homeScore === existingPrediction.predictedHomeScore && match.awayScore === existingPrediction.predictedAwayScore)
-                          ? (coinsReward > 0
-                              ? (isAr ? `صحيح (+${coinsReward} كوينز) 🏆` : `Exact (+${coinsReward} Coins) 🏆`)
-                              : (isAr ? 'صحيح (توقع سليم) 🎯' : 'Exact Prediction 🎯'))
-                          : (isAr ? 'لم يصب التوقع' : 'Missed')}
+                        {(Number(match.homeScore) === Number(existingPrediction.predictedHomeScore) && Number(match.awayScore) === Number(existingPrediction.predictedAwayScore))
+                          ? (isAr ? 'صحيح (أصبت النتيجة الدقيقة) ✓' : 'Exact Prediction ✓')
+                          : (isAr ? 'لم يصب التوقع ❌' : 'Missed ❌')}
                       </span>
                     </div>
                   ) : (
@@ -1028,13 +870,7 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                   <div className="p-3 bg-slate-900/90 rounded-xl border border-emerald-500/30 text-center space-y-0.5">
                     <div className="text-xl font-black text-emerald-400">1,120 {isAr ? 'مشترك أصابوا التوقع' : 'Winners'}</div>
                     <div className="text-xs font-bold text-emerald-300">
-                      {coinsReward > 0
-                        ? (isAr
-                            ? `🎉 حصل كل منهم على +${coinsReward} كوينز 🪙 في رصيد المحفظة`
-                            : `🎉 Each winner earned +${coinsReward} Coins 🪙 in their wallet`)
-                        : (isAr
-                            ? '🎯 تم احتساب التوقع الصحيح في لوحة المتصدرين'
-                            : '🎯 Exact predictions counted towards Leaderboard')}
+                      {isAr ? '🎯 تم احتساب التوقع الصحيح في لوحة النتائج والمتصدرين' : '🎯 Exact predictions counted towards Leaderboard'}
                     </div>
                   </div>
                 </div>
@@ -1074,35 +910,66 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                 </div>
               ) : (
                 /* Exact Score Predictor Section */
-                <div className="p-3.5 sm:p-4 bg-gradient-to-b from-slate-950 to-slate-900 rounded-2xl border border-amber-500/40 shadow-xl space-y-3 relative">
-                  {/* Fee & Reward Badges */}
+                <div className="p-3.5 sm:p-4 bg-gradient-to-b from-slate-950 to-slate-900 rounded-2xl border border-orange-500/40 shadow-xl space-y-3 relative">
+                  {/* Fee & Balance Badges */}
                   <div className="flex flex-wrap items-center justify-between gap-1.5">
-                    <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-black">
-                      <span className="animate-pulse">✨</span>
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-orange-500/20 text-orange-300 border border-orange-500/40 text-[11px] font-black">
+                      <OrangeDiamondIcon className="w-3.5 h-3.5" />
                       <span>
-                        {coinsReward > 0
-                          ? (isAr ? `توقع النتيجة واكسب +${coinsReward} كوينز لرصيدك` : `Predict Exact Score (+${coinsReward} Coins)`)
-                          : (isAr ? 'توقع النتيجة مجاناً ونافس في الترتيب 🎯' : 'Predict Score Free & Climb Leaderboard 🎯')}
+                        {isAr ? 'رسوم التوقع: 50 ماسة برتقالية' : 'Prediction Fee: 50 Orange Diamonds'}
                       </span>
                     </div>
 
-                    <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[11px] font-black">
-                      <span>🎁</span>
-                      <span>{isAr ? 'توقع مجاني بدون أي رسوم' : '100% Free Prediction'}</span>
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900 text-orange-300 border border-orange-500/30 text-[11px] font-black">
+                      <span>{isAr ? 'رصيدك:' : 'Your Gems:'}</span>
+                      <span className="font-mono text-white">{userDiamonds}</span>
+                      <OrangeDiamondIcon className="w-3.5 h-3.5" />
                     </div>
                   </div>
 
-                  {/* Free Prediction Banner */}
-                  {!existingPrediction && (
-                    <div className="p-2.5 bg-emerald-950/40 rounded-xl border border-emerald-500/30 flex items-center justify-between text-xs font-bold text-emerald-200">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-sm">🎁</span>
-                        <span>{isAr ? 'توقع النتائج مجاني بدون أي خصم كوينز' : 'Match predictions are 100% free with 0 fee'}</span>
+                  {/* 50 Diamonds Prediction Fee Banner */}
+                  {!existingPrediction ? (
+                    <div className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 text-xs font-bold ${
+                      userDiamonds >= DIAMOND_PREDICTION_FEE
+                        ? 'bg-orange-950/40 border-orange-500/40 text-orange-200'
+                        : 'bg-rose-950/50 border-rose-500/50 text-rose-200'
+                    }`}>
+                      <div className="flex items-center gap-1.5 text-right">
+                        <OrangeDiamondIcon className="w-4 h-4 shrink-0" />
+                        <span>
+                          {userDiamonds >= DIAMOND_PREDICTION_FEE
+                            ? (isAr ? 'توقع نتيجة أي ماتش بـ 50 ماسة (سيتم خصم 50 ماسة عند التأكيد)' : 'Predicting any match costs 50 Diamonds')
+                            : (isAr ? `تحتاج إلى 50 ماسة لتوقع المباراة (متبقي لك ${Math.max(0, DIAMOND_PREDICTION_FEE - userDiamonds)} ماسة)` : `You need 50 Diamonds to predict (${Math.max(0, DIAMOND_PREDICTION_FEE - userDiamonds)} more needed)`)}
+                        </span>
                       </div>
-                      <span className="font-mono font-black text-emerald-400 text-sm">
-                        مجاناً 0 🪙
+                      <span className="font-mono font-black text-orange-400 text-sm shrink-0 flex items-center gap-1">
+                        <span>50</span>
+                        <OrangeDiamondIcon className="w-3.5 h-3.5" />
                       </span>
                     </div>
+                  ) : (
+                    <div className="p-2.5 bg-emerald-950/40 rounded-xl border border-emerald-500/30 flex items-center justify-between text-xs font-bold text-emerald-200">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm">✓</span>
+                        <span>{isAr ? 'تم دفع رسوم التوقع (50 ماسة) لهذا الماتش — يمكنك تعديل النتيجة قبل البداية' : '50 Diamonds fee paid — You can update score before kickoff'}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Quick "ابدأ اللعب" CTA if user has less than 50 diamonds */}
+                  {!existingPrediction && userDiamonds < DIAMOND_PREDICTION_FEE && onOpenGames && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenGames();
+                      }}
+                      className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-orange-500 via-amber-500 to-orange-600 hover:from-orange-400 hover:to-amber-400 text-slate-950 font-black text-xs shadow-md flex items-center justify-center gap-2 cursor-pointer active:scale-95 transition-all"
+                    >
+                      <span>⚽</span>
+                      <span>{isAr ? 'ابدأ اللعب الآن واجمع 50 ماسة للتوقع!' : 'Start Playing Now & Collect 50 Diamonds!'}</span>
+                      <OrangeDiamondIcon className="w-4 h-4" />
+                    </button>
                   )}
 
                   <h4 className="font-extrabold text-white text-sm sm:text-base">
@@ -1172,6 +1039,14 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                   {/* Submit / Edit Prediction Button */}
                   <button
                     onClick={() => {
+                      if (!existingPrediction && userDiamonds < DIAMOND_PREDICTION_FEE) {
+                        setShowFeeConfirmation(true);
+                        return;
+                      }
+                      if (!existingPrediction) {
+                        setShowFeeConfirmation(true);
+                        return;
+                      }
                       if (onSavePrediction) {
                         onSavePrediction(match, predHomeScore, predAwayScore);
                       }
@@ -1183,76 +1058,87 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                     className={`w-full py-2.5 px-4 rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer active:scale-98 ${
                       predictionSaved
                         ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/40'
-                        : 'bg-gradient-to-r from-amber-500 via-emerald-600 to-teal-500 hover:from-amber-400 hover:to-emerald-400 text-white shadow-amber-950/40 ring-1 ring-amber-400/50'
+                        : 'bg-gradient-to-r from-orange-500 via-amber-500 to-emerald-600 hover:from-orange-400 hover:to-emerald-500 text-white shadow-orange-950/40 ring-1 ring-orange-400/50'
                     }`}
                   >
                     <span className="text-base">🎯</span>
-                    <span>
-                      {predictionSaved
-                        ? (isAr ? '✓ تم حفظ توقعك بنجاح!' : '✓ Prediction Saved!')
-                        : existingPrediction
-                        ? (isAr ? 'تعديل وحفظ التوقع 🎯' : 'Update Prediction 🎯')
-                        : coinsReward > 0
-                        ? (isAr ? `توقع الآن مجاناً (الجائزة +${coinsReward} كوينز) 🏆` : `Predict Free (Win +${coinsReward} Coins) 🏆`)
-                        : (isAr ? 'تأكيد وحفظ التوقع مجاناً 🎯' : 'Confirm Free Prediction 🎯')}
+                    <span className="flex items-center gap-1.5">
+                      {predictionSaved ? (
+                        <span>{isAr ? '✓ تم حفظ توقعك بنجاح!' : '✓ Prediction Saved!'}</span>
+                      ) : existingPrediction ? (
+                        <span>{isAr ? 'تعديل وحفظ التوقع 🎯' : 'Update Prediction 🎯'}</span>
+                      ) : (
+                        <>
+                          <span>{isAr ? 'تأكيد التوقع (رسوم 50 ماسة' : 'Confirm Prediction (50 Diamonds'}</span>
+                          <OrangeDiamondIcon className="w-4 h-4" />
+                          <span>)</span>
+                        </>
+                      )}
                     </span>
                   </button>
 
-                  {/* Confirmation Modal for Coin Deduction */}
+                  {/* Confirmation Modal for 50 Diamonds Deduction */}
                   {showFeeConfirmation && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
-                      <div className="bg-slate-900 border-2 border-amber-500/60 rounded-2xl p-5 max-w-sm w-full text-center space-y-4 shadow-2xl">
-                        <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 text-amber-400 flex items-center justify-center mx-auto text-2xl shadow-inner">
-                          🪙
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm animate-fadeIn">
+                      <div className="bg-slate-900 border-2 border-orange-500/60 rounded-2xl p-5 max-w-sm w-full text-center space-y-4 shadow-2xl">
+                        <div className="w-12 h-12 rounded-2xl bg-orange-500/20 border border-orange-500/40 text-orange-400 flex items-center justify-center mx-auto shadow-inner">
+                          <OrangeDiamondIcon className="w-7 h-7" />
                         </div>
 
                         <div className="space-y-1.5">
                           <h3 className="text-base font-black text-white">
-                            {isAr ? `هل أنت متأكد من إنفاق ${effectiveFee} كوينز علي التوقع؟` : `Are you sure you want to spend ${effectiveFee} coins to predict?`}
+                            {isAr ? `تأكيد رسوم التوقع (${effectiveFee} ماسة برتقالية)` : `Confirm Prediction Fee (${effectiveFee} Orange Diamonds)`}
                           </h3>
                           <p className="text-xs text-slate-300 leading-relaxed font-bold">
                             {isAr
-                              ? `سيتم خصم ${effectiveFee} كوينز من رصيدك فوراً. وفي حال كانت نتيجة توقعك صحيحة تماماً ستكسب ${coinsReward} كوينز في محفظتك! 🏆`
-                              : `${effectiveFee} coins will be deducted from your wallet. Exact correct score awards you ${coinsReward} coins! 🏆`}
+                              ? `رسوم توقع أي مباراة هي ${effectiveFee} ماسة برتقالية. وفي حال كانت نتيجة توقعك صحيحة تماماً ستكسب ${coinsReward} كوينز في محفظتك! 🏆`
+                              : `Predicting any match costs ${effectiveFee} Orange Diamonds. An exact score prediction rewards you with ${coinsReward} coins! 🏆`}
                           </p>
                         </div>
 
                         {/* Balance Breakdown */}
-                        <div className="p-3 bg-slate-950/90 rounded-xl border border-slate-800 space-y-1 text-xs">
+                        <div className="p-3 bg-slate-950/90 rounded-xl border border-slate-800 space-y-1.5 text-xs">
                           <div className="flex items-center justify-between text-slate-300 font-bold">
-                            <span>{isAr ? 'رصيدك الحالي:' : 'Current Balance:'}</span>
-                            <span className="font-mono font-black text-amber-400">{userPoints} 🪙</span>
+                            <span>{isAr ? 'رصيدك الحالي من الماسات:' : 'Current Diamonds Balance:'}</span>
+                            <span className="font-mono font-black text-orange-400 flex items-center gap-1">
+                              <span>{userDiamonds}</span>
+                              <OrangeDiamondIcon className="w-3.5 h-3.5" />
+                            </span>
                           </div>
                           <div className="flex items-center justify-between text-rose-300 font-bold">
                             <span>{isAr ? 'رسوم التوقع (خصم):' : 'Prediction Fee:'}</span>
-                            <span className="font-mono font-black text-rose-400">-{effectiveFee} 🪙</span>
+                            <span className="font-mono font-black text-rose-400 flex items-center gap-1">
+                              <span>-{effectiveFee}</span>
+                              <OrangeDiamondIcon className="w-3.5 h-3.5" />
+                            </span>
                           </div>
                           <div className="h-px bg-slate-800 my-1" />
                           <div className="flex items-center justify-between text-emerald-300 font-black">
-                            <span>{isAr ? 'الجائزة عند الفوز:' : 'Reward on Win:'}</span>
+                            <span>{isAr ? 'الجائزة عند التوقع الصحيح:' : 'Reward on Exact Win:'}</span>
                             <span className="font-mono font-black text-emerald-400">+{coinsReward} 🪙</span>
                           </div>
                         </div>
 
-                        {userPoints < effectiveFee ? (
-                          <div className="p-2.5 bg-rose-950/60 rounded-xl border border-rose-500/40 text-xs font-black text-rose-300 space-y-2">
+                        {userDiamonds < effectiveFee ? (
+                          <div className="p-3 bg-rose-950/60 rounded-xl border border-rose-500/40 text-xs font-black text-rose-300 space-y-2.5">
                             <div>
                               {isAr
-                                ? `⚠️ رصيدك غير كافٍ (لديك ${userPoints} كوينز، المطلوب ${effectiveFee} كوينز).`
-                                : `⚠️ Insufficient balance (You have ${userPoints} coins, ${effectiveFee} needed).`}
+                                ? `⚠️ رصيدك من الماسات غير كافٍ (لديك ${userDiamonds} ماسة، والمطلوب ${effectiveFee} ماسة لتوقع المباراة).`
+                                : `⚠️ Insufficient diamonds (You have ${userDiamonds} diamonds, ${effectiveFee} needed to predict).`}
                             </div>
-                            {onOpenProSubscriptions && (
+                            {onOpenGames && (
                               <button
                                 type="button"
                                 onClick={() => {
                                   setShowFeeConfirmation(false);
                                   onClose();
-                                  onOpenProSubscriptions();
+                                  onOpenGames();
                                 }}
-                                className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-950 font-black text-xs shadow-md cursor-pointer hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-1.5"
+                                className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 text-slate-950 font-black text-xs shadow-md cursor-pointer hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-1.5"
                               >
-                                <span>👑</span>
-                                <span>{isAr ? 'شحن كوينز فوري (اشتراكات برو)' : 'Recharge Coins (PRO)'}</span>
+                                <span>⚽</span>
+                                <span>{isAr ? 'ابدأ اللعب واجمع الماسات الآن' : 'Start Playing to Earn Diamonds'}</span>
+                                <OrangeDiamondIcon className="w-4 h-4" />
                               </button>
                             )}
                           </div>
@@ -1267,7 +1153,7 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                           </button>
 
                           <button
-                            disabled={userPoints < effectiveFee}
+                            disabled={userDiamonds < effectiveFee}
                             onClick={() => {
                               setShowFeeConfirmation(false);
                               if (onSavePrediction) {
@@ -1278,13 +1164,13 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                                 onClose();
                               }, 400);
                             }}
-                            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs cursor-pointer active:scale-95 transition-all shadow-md ${
-                              userPoints < effectiveFee
+                            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs cursor-pointer active:scale-95 transition-all shadow-md flex items-center justify-center gap-1 ${
+                              userDiamonds < effectiveFee
                                 ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
-                                : 'bg-gradient-to-r from-amber-500 to-emerald-600 hover:from-amber-400 hover:to-emerald-500 text-white shadow-amber-950/40'
+                                : 'bg-gradient-to-r from-orange-500 to-emerald-600 hover:from-orange-400 hover:to-emerald-500 text-white shadow-orange-950/40'
                             }`}
                           >
-                            {isAr ? `موافق (خصم ${effectiveFee} كوينز)` : `Confirm (Spend ${effectiveFee})`}
+                            <span>{isAr ? `موافق (خصم ${effectiveFee} ماسة)` : `Confirm (${effectiveFee} Gems)`}</span>
                           </button>
                         </div>
                       </div>
@@ -1356,8 +1242,9 @@ export const MatchDetailsModal: React.FC<MatchDetailsModalProps> = ({
                             {isAr ? 'مسجل' : 'Saved'}
                           </span>
                         </div>
-                        <div className="text-[10px] text-amber-300/80 font-medium">
-                          {isAr ? '+50 كوينز عند إصابة النتيجة' : '+50 Coins on match end'}
+                        <div className="text-[10px] text-orange-300/90 font-medium flex items-center gap-1">
+                          <span>{isAr ? 'رسوم التوقع: 50 ماسة' : 'Prediction Fee: 50 Diamonds'}</span>
+                          <OrangeDiamondIcon className="w-3 h-3" />
                         </div>
                       </div>
                     </div>

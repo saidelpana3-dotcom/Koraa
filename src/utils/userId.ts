@@ -28,7 +28,6 @@ export function getUserOrGuestNumericId(user: any): string {
     if (typeof window !== 'undefined') {
       localStorage.setItem(`kora_permanent_id_${user.uid}`, generated);
       localStorage.setItem(`kora_user_numeric_id_${user.uid}`, generated);
-      localStorage.setItem('kora_user_numeric_id', generated);
     }
     return generated;
   }
@@ -38,13 +37,11 @@ export function getUserOrGuestNumericId(user: any): string {
     if (cached && /^\d{8}$/.test(cached)) {
       localStorage.setItem('kora_guest_id', cached);
       localStorage.setItem('kora_guest_numeric_id', cached);
-      localStorage.setItem('kora_user_numeric_id', cached);
       return cached;
     }
     const newId = (Math.floor(Math.random() * 90000000) + 10000000).toString();
     localStorage.setItem('kora_guest_id', newId);
     localStorage.setItem('kora_guest_numeric_id', newId);
-    localStorage.setItem('kora_user_numeric_id', newId);
     return newId;
   }
 

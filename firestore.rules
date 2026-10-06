@@ -54,6 +54,18 @@ service cloud.firestore {
       allow read: if true;
       allow write: if isAuthenticated();
     }
+
+    // League Tournaments: publicly readable, writable by authenticated users
+    match /leagueTournaments/{tournamentId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // League Tournament Participants: readable for public standings, writable by authenticated users
+    match /leagueTournamentParticipants/{participantId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
   }
 }
 

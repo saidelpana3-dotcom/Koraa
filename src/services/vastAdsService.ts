@@ -57,9 +57,13 @@ export const DEFAULT_VAST_ADS: VastAdItem[] = [
 
 let cachedClientAds: VastAdItem[] = DEFAULT_VAST_ADS;
 let isFetchingAds = false;
+let lastClientFetchTime = 0;
 
 export async function fetchLiveVastAds(): Promise<VastAdItem[]> {
-  if (isFetchingAds) return cachedClientAds;
+  const now = Date.now();
+  if (isFetchingAds || (now - lastClientFetchTime < 60000 && cachedClientAds.length > 0)) {
+    return cachedClientAds;
+  }
   isFetchingAds = true;
   try {
     const res = await fetch('/api/ads/vast');
@@ -67,11 +71,14 @@ export async function fetchLiveVastAds(): Promise<VastAdItem[]> {
       const data = await res.json();
       if (data && Array.isArray(data.ads) && data.ads.length > 0) {
         cachedClientAds = data.ads;
+        lastClientFetchTime = now;
         return data.ads;
       }
     }
-  } catch (err) {
-    console.warn('Using default VAST ads fallback:', err);
+    lastClientFetchTime = now;
+  } catch (_) {
+    // Silently use default VAST ads fallback
+    lastClientFetchTime = now;
   } finally {
     isFetchingAds = false;
   }

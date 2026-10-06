@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Language, PrizeClaim, Match, ThemeMode } from '../types';
+import { Language, PrizeClaim, Match, ThemeMode, WonTournamentRankRecord } from '../types';
 import { getNumericUserId, getUserOrGuestNumericId } from '../utils/userId';
 import { KORA_LOGO_BASE64 } from '../assets/logoBase64';
+import { OrangeDiamondIcon } from './OrangeDiamondIcon';
+import { getUserWonTournamentRanks } from '../data/leagueTournaments';
 import { 
   db, 
   auth, 
@@ -18,9 +20,10 @@ import {
   handleFirestoreError,
   OperationType
 } from '../lib/firebase';
-import { isMatchRemovedGlobally } from '../utils/predictionEvaluator';
+import { isMatchRemovedGlobally, FINISHED_MATCHES_CATALOG } from '../utils/predictionEvaluator';
 import { 
   Award, 
+  Trophy,
   CheckCircle2, 
   Clock, 
   LogIn, 
@@ -62,11 +65,14 @@ interface AccountPageProps {
   setTheme?: (theme: ThemeMode) => void;
   userPoints: number;
   setUserPoints: React.Dispatch<React.SetStateAction<number>>;
+  userDiamonds?: number;
+  onOpenGames?: () => void;
   user: any;
   onSignIn: () => Promise<void>;
+  onSignOut?: () => Promise<void>;
   userPredictions?: Record<string, { predictedHomeScore: number; predictedAwayScore: number }>;
   matches?: Match[];
-  onOpenDetails?: (match: Match, tab?: 'lineup' | 'stats' | 'events' | 'ai' | 'predict') => void;
+  onOpenDetails?: (match: Match, tab?: 'lineup' | 'stats' | 'events' | 'predict') => void;
   onInstallApp?: () => void;
   initialSubTab?: AccountSubTab;
   highlightMatchId?: string;
@@ -103,8 +109,11 @@ export const AccountPage: React.FC<AccountPageProps> = ({
   onToggleTheme,
   setTheme,
   userPoints,
+  userDiamonds = 0,
+  onOpenGames,
   user,
   onSignIn,
+  onSignOut,
   userPredictions,
   matches,
   onOpenDetails,
@@ -121,6 +130,9 @@ export const AccountPage: React.FC<AccountPageProps> = ({
   const [legalTab, setLegalTab] = useState<'privacy' | 'terms'>('privacy');
   const [predictionsList, setPredictionsList] = useState<UserPredictionRecord[]>([]);
   const [claimsList, setClaimsList] = useState<PrizeClaim[]>([]);
+  const [wonTournaments, setWonTournaments] = useState<WonTournamentRankRecord[]>(() => {
+    return getUserWonTournamentRanks(user?.uid);
+  });
   const [, setLoadingHistory] = useState<boolean>(false);
 
   // Sync subtab if initialSubTab or highlightMatchId changes
@@ -340,19 +352,50 @@ export const AccountPage: React.FC<AccountPageProps> = ({
           const data = await res.json();
           if (data?.success && data?.account) {
             const acc = data.account;
-            if (Array.isArray(acc.predictionsList) && acc.predictionsList.length > 0) {
+            if ((Array.isArray(acc.predictionsList) && acc.predictionsList.length > 0) || (acc.predictionsMap && typeof acc.predictionsMap === 'object')) {
               setPredictionsList((prev) => {
                 const map = new Map<string, UserPredictionRecord>();
                 prev.forEach((p) => {
                   const mId = p.matchId || p.id;
                   if (mId) map.set(mId, p);
                 });
-                acc.predictionsList.forEach((p: any) => {
-                  const mId = p.matchId || p.id;
-                  if (mId && !map.has(mId)) {
-                    map.set(mId, p);
-                  }
-                });
+                if (Array.isArray(acc.predictionsList)) {
+                  acc.predictionsList.forEach((p: any) => {
+                    const mId = p.matchId || p.id;
+                    if (mId) {
+                      const existing = map.get(mId) as any;
+                      if (!existing || !existing.updatedAt || !p.updatedAt || new Date(p.updatedAt) >= new Date(existing.updatedAt)) {
+                        map.set(mId, p);
+                      }
+                    }
+                  });
+                }
+                if (acc.predictionsMap && typeof acc.predictionsMap === 'object') {
+                  Object.entries(acc.predictionsMap).forEach(([mId, pred]: [string, any]) => {
+                    if (mId && pred && !map.has(mId)) {
+                      const targetMatch = matches.find((m) => m.id === mId);
+                      const isFinished = targetMatch?.status === 'FINISHED';
+                      const isExact = isFinished && targetMatch.homeScore === pred.predictedHomeScore && targetMatch.awayScore === pred.predictedAwayScore;
+                      map.set(mId, {
+                        id: `pred_${userKey}_${mId}`,
+                        userId: userKey,
+                        matchId: mId,
+                        matchHomeTeam: targetMatch?.homeTeam || 'Home Team',
+                        matchHomeTeamAr: targetMatch?.homeTeamAr || 'الفريق المضيف',
+                        matchAwayTeam: targetMatch?.awayTeam || 'Away Team',
+                        matchAwayTeamAr: targetMatch?.awayTeamAr || 'الفريق الضيف',
+                        matchHomeScore: targetMatch?.homeScore,
+                        matchAwayScore: targetMatch?.awayScore,
+                        predictedHomeScore: pred.predictedHomeScore,
+                        predictedAwayScore: pred.predictedAwayScore,
+                        status: isFinished ? (isExact ? 'EXACT_SCORE' : 'MISSED') : 'PENDING',
+                        pointsEarned: isExact ? 50 : 0,
+                        coinsEarned: isExact ? 50 : 0,
+                        createdAt: pred.updatedAt || new Date().toISOString(),
+                      });
+                    }
+                  });
+                }
                 const combined = Array.from(map.values());
                 localStorage.setItem(predsStorageKey, JSON.stringify(combined));
                 return combined;
@@ -425,10 +468,21 @@ export const AccountPage: React.FC<AccountPageProps> = ({
     let unsubAccountPreds: (() => void) | null = null;
     let unsubAccountClaims: (() => void) | null = null;
     let unsubAccountProfile: (() => void) | null = null;
+    let unsubUserDoc: (() => void) | null = null;
 
     const fetchUserHistory = async () => {
       setLoadingHistory(true);
       try {
+        const userDocRef = doc(db, 'users', user.uid);
+        unsubUserDoc = onSnapshot(userDocRef, (userSnap) => {
+          if (userSnap.exists()) {
+            const uData = userSnap.data();
+            if (Array.isArray(uData.wonTournamentRanks)) {
+              setWonTournaments(uData.wonTournamentRanks);
+            }
+          }
+        }, () => {});
+
         const profileRef = doc(db, 'userPaymentProfiles', user.uid);
         unsubAccountProfile = onSnapshot(profileRef, (profileSnap) => {
           if (profileSnap.exists()) {
@@ -540,6 +594,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
       if (unsubAccountPreds) unsubAccountPreds();
       if (unsubAccountClaims) unsubAccountClaims();
       if (unsubAccountProfile) unsubAccountProfile();
+      if (unsubUserDoc) unsubUserDoc();
     };
   }, [user]);
 
@@ -583,11 +638,50 @@ export const AccountPage: React.FC<AccountPageProps> = ({
     }
   };
 
+  const [isSigningOut, setIsSigningOut] = useState<boolean>(false);
+
   const handleSignOut = async () => {
+    if (isSigningOut) return;
+    setIsSigningOut(true);
     try {
-      await signOut(auth);
+      if (user?.uid) {
+        if (typeof userPoints === 'number') {
+          localStorage.setItem(`kora_user_points_${user.uid}`, userPoints.toString());
+        }
+        // Non-blocking fire-and-forget sync: do NOT await so signout is never blocked
+        fetch('/api/user/sync-account', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: user.uid,
+            email: user.email,
+            displayName: user.displayName,
+            localCoins: userPoints,
+          }),
+        }).catch(() => {});
+      }
+
+      // Reset install prompt flags so that when user enters/logs in again, they are prompted to install
+      try {
+        localStorage.removeItem('kora_install_prompt_responded');
+        localStorage.removeItem('kora_first_visit_install_prompt_responded');
+        localStorage.setItem('kora_show_install_after_logout', 'true');
+        window.dispatchEvent(new Event('kora_user_signed_out'));
+      } catch (_) {}
+
+      // Prioritize onSignOut passed from App which immediately sets user to null
+      if (onSignOut) {
+        await onSignOut();
+      } else {
+        await signOut(auth);
+      }
     } catch (err) {
-      console.error('Sign out error:', err);
+      console.error('Sign out error in AccountPage:', err);
+      try {
+        await signOut(auth);
+      } catch (_) {}
+    } finally {
+      setIsSigningOut(false);
     }
   };
 
@@ -817,31 +911,51 @@ export const AccountPage: React.FC<AccountPageProps> = ({
               </div>
 
               {/* Points & Sign In/Out Actions */}
-              <div className="flex flex-row sm:flex-col items-center sm:items-end justify-between w-full sm:w-auto gap-2">
-                <div className={`border px-3.5 py-1.5 rounded-xl shadow-inner text-center flex items-center gap-2 sm:block ${
+              <div className="flex flex-col items-stretch sm:items-end justify-between w-full sm:w-auto gap-1.5">
+                <div className={`border px-3.5 py-1.5 rounded-xl shadow-inner text-center flex items-center justify-between sm:block gap-2 ${
                   isDark ? 'bg-slate-950/90 border-amber-500/50' : 'bg-amber-50 border-amber-300'
                 }`}>
                   <span className={`text-[10px] font-bold uppercase block ${isDark ? 'text-amber-300/80' : 'text-amber-800'}`}>
                     {isAr ? 'رصيد الكوينز:' : 'Coins Balance:'}
                   </span>
-                  <div className="text-xl sm:text-2xl font-black font-mono text-amber-600 dark:text-amber-400 flex items-center justify-center gap-1">
+                  <div className="text-xl sm:text-2xl font-black font-mono text-amber-600 dark:text-amber-400 flex items-center justify-center gap-1 tabular-nums">
                     <span className="text-base">🪙</span>
                     <span>{user ? (isAshrafFarouk ? Math.max(250, userPoints) : userPoints) : 0}</span>
                     <span className="text-xs font-black text-amber-700 dark:text-amber-300">{isAr ? 'كوينز' : 'Coins'}</span>
                   </div>
                 </div>
 
+                {/* Orange Diamonds Counter Directly Under Coins Balance */}
+                <div
+                  onClick={onOpenGames}
+                  className={`border px-3.5 py-1.5 rounded-xl shadow-inner text-center flex items-center justify-between sm:block gap-2 transition-all ${
+                    onOpenGames ? 'cursor-pointer active:scale-95' : ''
+                  } ${
+                    isDark ? 'bg-orange-950/60 border-orange-500/50 hover:border-orange-400' : 'bg-orange-50 border-orange-300 hover:border-orange-400'
+                  }`}
+                >
+                  <span className={`text-[10px] font-bold uppercase block ${isDark ? 'text-orange-300/90' : 'text-orange-800'}`}>
+                    {isAr ? 'رصيد الماسات البرتقالية:' : 'Orange Diamonds:'}
+                  </span>
+                  <div className="text-lg sm:text-xl font-black font-mono text-orange-500 dark:text-orange-400 flex items-center justify-center gap-1.5 tabular-nums">
+                    <OrangeDiamondIcon className="w-4 h-4" />
+                    <span>{user ? userDiamonds : 0}</span>
+                    <span className="text-xs font-black text-orange-700 dark:text-orange-300">{isAr ? 'ماسة برتقالي' : 'Gems'}</span>
+                  </div>
+                </div>
+
                 {user ? (
                   <button
                     onClick={handleSignOut}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
+                    disabled={isSigningOut}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer active:scale-95 ${
                       isDark
                         ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
                         : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
-                    }`}
+                    } ${isSigningOut ? 'opacity-60 cursor-not-allowed' : ''}`}
                   >
-                    <LogOut className="w-3.5 h-3.5 text-rose-500" />
-                    <span>{isAr ? 'تسجيل الخروج' : 'Sign Out'}</span>
+                    <LogOut className={`w-3.5 h-3.5 text-rose-500 ${isSigningOut ? 'animate-spin' : ''}`} />
+                    <span>{isSigningOut ? (isAr ? 'جاري الخروج...' : 'Signing out...') : (isAr ? 'تسجيل الخروج' : 'Sign Out')}</span>
                   </button>
                 ) : (
                   <div className="flex items-center gap-1.5">
@@ -931,7 +1045,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
           </div>
 
           {/* User Stats & Coins Overview Bar */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
             {/* 1. Correct Predictions Count (النتيجة الدقيقة) */}
             <div className={`border rounded-2xl p-3.5 shadow-sm space-y-1 ${
               isDark ? 'bg-slate-900/90 border-emerald-500/30' : 'bg-emerald-50/70 border-emerald-200'
@@ -1011,6 +1125,109 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                 {isAr ? 'إنستاباي ومحافظ' : 'InstaPay & Wallets'}
               </p>
             </div>
+
+            {/* 5. Tournaments Won Count (طلب المستخدم الصريح: عدد البطولات اللي هوا كسب فيها مراكز) */}
+            <div className={`col-span-2 sm:col-span-1 border rounded-2xl p-3.5 shadow-sm space-y-1 ${
+              isDark ? 'bg-slate-900/90 border-amber-500/40' : 'bg-amber-50/70 border-amber-300'
+            }`}>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-extrabold text-amber-700 dark:text-amber-300">
+                  {isAr ? 'بطولات المراكز' : 'Podium Wins'}
+                </span>
+                <span className="text-sm">🏆</span>
+              </div>
+              <div className="text-xl sm:text-2xl font-black font-mono text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                <span>{wonTournaments.length}</span>
+                <span className="text-[10px] font-black">{isAr ? 'بطولة' : 'cups'}</span>
+              </div>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold">
+                {isAr ? 'المراكز (1 أو 2 أو 3)' : 'Top 3 ranks'}
+              </p>
+            </div>
+          </div>
+
+          {/* Dedicated Section: User's Won Tournament Podium Records */}
+          <div className={`border rounded-2xl p-4 shadow-sm space-y-3 ${
+            isDark ? 'bg-slate-900/90 border-slate-800 text-white' : 'bg-white border-slate-200 text-slate-900'
+          }`}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-500 flex items-center justify-center text-sm">
+                  🏆
+                </div>
+                <div>
+                  <h4 className="text-xs sm:text-sm font-black">
+                    {isAr ? 'سجل بطولاتك والمراكز الرابحة 🏆' : 'Tournaments Won & Podium Ranks 🏆'}
+                  </h4>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    {isAr ? 'عدد البطولات التي حصلت فيها على مراكز التتويج الثلاثة الأولى' : 'Tournaments where you placed in the top 3'}
+                  </p>
+                </div>
+              </div>
+              <span className="text-xs font-mono font-black text-amber-600 dark:text-amber-400 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20">
+                {wonTournaments.length} {isAr ? 'بطولة رابحة' : 'won'}
+              </span>
+            </div>
+
+            {wonTournaments.length === 0 ? (
+              <div className={`p-4 rounded-xl border text-center space-y-1 ${
+                isDark ? 'bg-slate-950/60 border-slate-800 text-slate-400' : 'bg-slate-50 border-slate-200 text-slate-600'
+              }`}>
+                <p className="text-xs font-bold">
+                  {isAr ? 'لم تفز بمراكز في البطولات حتى الآن 🏅' : 'No tournament podium finishes yet 🏅'}
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  {isAr 
+                    ? 'شارك مجاناً في بطولة الدوريات الكبرى وتوقع القمم لتتصدر قائمة الشرف وتربح حتى 200 كوينز!' 
+                    : 'Join league tournaments for free and predict top matches to enter the leaderboard and win up to 200 coins!'}
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {wonTournaments.map((record) => (
+                  <div
+                    key={record.id}
+                    className={`p-3 rounded-xl border flex items-center justify-between gap-3 ${
+                      isDark ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="text-2xl shrink-0">
+                        {record.rank === 1 ? '🥇' : record.rank === 2 ? '🥈' : '🥉'}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-full ${
+                            record.rank === 1 
+                              ? 'bg-amber-500 text-slate-950' 
+                              : record.rank === 2 
+                              ? 'bg-slate-300 text-slate-900' 
+                              : 'bg-amber-700 text-white'
+                          }`}>
+                            {record.rank === 1 ? (isAr ? 'المركز الأول' : '1st Place') : record.rank === 2 ? (isAr ? 'المركز الثاني' : '2nd Place') : (isAr ? 'المركز الثالث' : '3rd Place')}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {new Date(record.wonAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}
+                          </span>
+                        </div>
+                        <h5 className="text-xs font-bold truncate mt-0.5">
+                          {isAr ? record.tournamentTitleAr : record.tournamentTitle}
+                        </h5>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 text-right rtl:text-left">
+                      <span className="text-xs font-black font-mono text-amber-600 dark:text-amber-400 block">
+                        +{record.prizeCoins} 🪙
+                      </span>
+                      <span className="text-[9px] text-emerald-600 dark:text-emerald-400 font-bold">
+                        {isAr ? 'تمت الإضافة' : 'Credited'}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Quick Action Hub: Pro Subscriptions (شحن الكوينز) & Daily Login Gift (١٥ كوينز) */}
@@ -1466,16 +1683,73 @@ export const AccountPage: React.FC<AccountPageProps> = ({
           ) : (
             <div className="grid grid-cols-1 gap-3">
               {uniquePredictionsList.map((pred) => {
-                const matchId = pred.matchId || (typeof pred.id === 'string' && pred.id.startsWith('pred_') ? pred.id.split('_').pop() : pred.id);
+                const matchId = pred.matchId || (typeof pred.id === 'string' && pred.id.startsWith('pred_') ? pred.id.split('_').slice(2).join('_') : pred.id);
                 const currentScore = (matchId && userPredictions?.[matchId])
                   ? userPredictions[matchId]
                   : { predictedHomeScore: pred.predictedHomeScore, predictedAwayScore: pred.predictedAwayScore };
-                const targetMatch = matches?.find((m) => m.id === matchId);
+                const targetMatch = matches?.find((m) => 
+                  m.id === matchId || 
+                  (matchId === 'm_epl_fulham_chelsea' && (m.id === 'm_epl_chelsea_fulham' || m.id === 'm_epl_fulham_chelsea')) ||
+                  (matchId === 'm_egy_ahly_smouha' && (m.id === 'm_egy_ahly_smouha_sep3' || m.id === 'm_egy_ahly_smouha')) ||
+                  (Boolean(pred.matchHomeTeamAr) && Boolean(pred.matchAwayTeamAr) && (
+                    (m.homeTeamAr === pred.matchHomeTeamAr && m.awayTeamAr === pred.matchAwayTeamAr) ||
+                    (m.homeTeam === pred.matchHomeTeam && m.awayTeam === pred.matchAwayTeam)
+                  ))
+                );
 
-                const isMatchFinished = targetMatch?.status === 'FINISHED' || pred.status === 'EXACT_SCORE' || pred.status === 'MISSED';
-                const actualHome = targetMatch?.homeScore ?? pred.matchHomeScore;
-                const actualAway = targetMatch?.awayScore ?? pred.matchAwayScore;
-                const isExactRight = pred.status === 'EXACT_SCORE' || (isMatchFinished && typeof actualHome === 'number' && typeof actualAway === 'number' && actualHome === currentScore.predictedHomeScore && actualAway === currentScore.predictedAwayScore);
+                const catalogEntry = matchId ? FINISHED_MATCHES_CATALOG[matchId] : undefined;
+                const isMatchFinished = Boolean(
+                  targetMatch?.status === 'FINISHED' || 
+                  targetMatch?.isFinished === true ||
+                  targetMatch?.pointsDistributed === true ||
+                  targetMatch?.minute === 'انتهت' || 
+                  targetMatch?.minute === 'FT' || 
+                  targetMatch?.time === 'انتهت' || 
+                  targetMatch?.time === 'FT' || 
+                  catalogEntry ||
+                  (typeof targetMatch?.homeScore === 'number' && typeof targetMatch?.awayScore === 'number' && targetMatch.status !== 'UPCOMING') ||
+                  pred.status === 'EXACT_SCORE' || 
+                  pred.status === 'MISSED'
+                );
+
+                let actualHome = catalogEntry
+                  ? catalogEntry.homeScore
+                  : (typeof targetMatch?.homeScore === 'number' ? targetMatch.homeScore : pred.matchHomeScore);
+                let actualAway = catalogEntry
+                  ? catalogEntry.awayScore
+                  : (typeof targetMatch?.awayScore === 'number' ? targetMatch.awayScore : pred.matchAwayScore);
+
+                if (!catalogEntry && actualHome === 0 && actualAway === 0 && typeof window !== 'undefined') {
+                  try {
+                    const raw = localStorage.getItem('kora_completed_match_scores');
+                    if (raw && matchId) {
+                      const parsed = JSON.parse(raw);
+                      const saved = parsed[matchId];
+                      if (saved && typeof saved.homeScore === 'number' && typeof saved.awayScore === 'number' && (saved.homeScore > 0 || saved.awayScore > 0)) {
+                        actualHome = saved.homeScore;
+                        actualAway = saved.awayScore;
+                      }
+                    }
+                  } catch (_) {}
+                }
+
+                const predHome = Number(currentScore.predictedHomeScore);
+                const predAway = Number(currentScore.predictedAwayScore);
+
+                const teamsInverted = Boolean(
+                  targetMatch && (
+                    (pred.matchHomeTeamAr && targetMatch.awayTeamAr && pred.matchHomeTeamAr === targetMatch.awayTeamAr) ||
+                    (pred.matchHomeTeam && targetMatch.awayTeam && pred.matchHomeTeam === targetMatch.awayTeam)
+                  )
+                );
+
+                const isExactRight = pred.status === 'EXACT_SCORE' || (
+                  isMatchFinished && 
+                  typeof actualHome === 'number' && 
+                  typeof actualAway === 'number' && 
+                  ((actualHome === predHome && actualAway === predAway) ||
+                   (teamsInverted && actualHome === predAway && actualAway === predHome))
+                );
                 const isMissed = (pred.status === 'MISSED' || isMatchFinished) && !isExactRight;
 
                 const isHighlighted = Boolean(highlightMatchId && (highlightMatchId === matchId || pred.id === highlightMatchId));
@@ -1554,7 +1828,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                       {isExactRight ? (
                         <span className="px-3 py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-500/50 text-emerald-800 dark:text-emerald-300 font-black text-xs flex items-center gap-1.5 shadow-sm">
                           <Award className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                          <span>{isAr ? 'توقع النتيجة الدقيقة! 🎉 (+50 كوينز 🪙)' : 'Exact Score! (+50 Coins)'}</span>
+                          <span>{isAr ? 'توقع النتيجة الدقيقة! 🎉' : 'Exact Score! 🎉'}</span>
                         </span>
                       ) : isMissed ? (
                         <span className={`px-3 py-1.5 rounded-xl border font-bold text-xs flex items-center gap-1.5 ${

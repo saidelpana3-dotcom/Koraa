@@ -27,7 +27,7 @@ export interface Lineup {
 }
 
 export interface MatchEvent {
-  id: string;
+  id?: string;
   minute: number;
   type: 'GOAL' | 'YELLOW_CARD' | 'RED_CARD' | 'SUBSTITUTION' | 'VAR' | 'PENALTY' | 'PENALTY_GOAL' | 'OWN_GOAL';
   team: 'HOME' | 'AWAY' | 'home' | 'away';
@@ -100,6 +100,7 @@ export interface Match {
   minute?: number | string;
   date: string; // ISO string or format YYYY-MM-DD
   dateAr?: string; // Arabic display date e.g. "الأربعاء، ١٩ أغسطس"
+  dayLabelAr?: string; // Arabic day label e.g. "اليوم", "غداً"
   dayOffset?: number; // Relative day offset (0 = today, 1 = tomorrow, 2 = day after, -1 = yesterday)
   time: string; // e.g., "21:00"
   kickoffTimeMs?: number; // Epoch timestamp for automated live status handling
@@ -309,6 +310,61 @@ export interface FeaturedTournament {
   participantsCount?: number;
 }
 
+export interface WonTournamentRankRecord {
+  id: string;
+  tournamentId: string;
+  tournamentTitle: string;
+  tournamentTitleAr: string;
+  rank: 1 | 2 | 3;
+  prizeCoins: number; // 200, 150, or 100
+  wonAt: string;
+}
+
+export interface LeagueTournamentParticipant {
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  joinedAt: string;
+  correctPredictionsCount: number;
+  exactPredictionsCount: number;
+  totalPredictionsCount: number;
+  rank?: number;
+  predictions?: Record<string, { predictedHomeScore: number; predictedAwayScore: number; predictedAt: string }>;
+}
+
+export interface LeagueTournamentPrediction {
+  userId: string;
+  tournamentId: string;
+  matchId: string;
+  predictedHomeScore: number;
+  predictedAwayScore: number;
+  predictedAt: string;
+}
+
+export interface LeagueTournament {
+  id: string;
+  title: string;
+  titleAr: string;
+  description: string;
+  descriptionAr: string;
+  leagueName: string;
+  leagueNameAr: string;
+  minRequiredParticipants: number; // 250
+  participantsCount: number;
+  isUnlocked: boolean; // unlocked when participantsCount >= 250
+  status: 'RECRUITING' | 'ACTIVE' | 'FINISHED';
+  startDate: string;
+  endDate: string;
+  matches: Match[];
+  prizes: {
+    first: { coins: number; label: string; labelAr: string };
+    second: { coins: number; label: string; labelAr: string };
+    third: { coins: number; label: string; labelAr: string };
+  };
+  prizesDistributed?: boolean;
+  participants: LeagueTournamentParticipant[];
+}
+
 export interface PushNotificationLog {
   id: string;
   userId?: string;
@@ -329,5 +385,41 @@ export interface PushNotificationLog {
   reminderMinutes?: number;
   timestamp: string;
   read?: boolean;
+}
+
+export interface FinishedTournamentRecord {
+  id: string;
+  tournamentId: string;
+  title: string;
+  titleAr: string;
+  type: 'league' | 'match_cup';
+  completedAt: string;
+  totalParticipants: number;
+  podium: {
+    rank: 1 | 2 | 3;
+    userId: string;
+    userName: string;
+    prizeCoins: number;
+    correctPredictionsCount: number;
+  }[];
+  finalStandings?: {
+    rank: number;
+    userId: string;
+    userName: string;
+    correctPredictionsCount: number;
+    exactPredictionsCount: number;
+  }[];
+  matches?: {
+    homeTeam: string;
+    homeTeamAr?: string;
+    awayTeam: string;
+    awayTeamAr?: string;
+    homeScore?: number;
+    awayScore?: number;
+    status?: string;
+    homeLogo?: string;
+    awayLogo?: string;
+  }[];
+  prizesDistributed: boolean;
 }
 

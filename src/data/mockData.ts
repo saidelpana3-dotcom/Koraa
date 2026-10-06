@@ -123,6 +123,24 @@ export const LEAGUES: League[] = [
     flag: '🇹🇷',
     badge: '🇹🇷',
   },
+  {
+    id: 'caf_cl',
+    name: 'CAF Champions League',
+    nameAr: 'دوري أبطال أفريقيا',
+    country: 'Africa',
+    countryAr: 'أفريقيا',
+    flag: '🌍',
+    badge: '🏆',
+  },
+  {
+    id: 'uefa_conference',
+    name: 'UEFA Conference League',
+    nameAr: 'دوري المؤتمر الأوروبي',
+    country: 'Europe',
+    countryAr: 'أوروبا',
+    flag: '🇪🇺',
+    badge: '🏆',
+  },
 ];
 
 /**

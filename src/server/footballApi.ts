@@ -57,10 +57,10 @@ let cachedLiveFixtures: { data: ApiFootballFixture[]; timestamp: number } | null
 let cachedDateFixtures: Record<string, { data: ApiFootballFixture[]; timestamp: number }> = {};
 const fixtureDetailsCache: Record<string, { data: any; timestamp: number }> = {};
 
-// Cache durations calibrated to preserve the 100 daily requests free quota
-const LIVE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes for live fixtures (300 seconds)
+// Cache durations calibrated to preserve API quota while maintaining live updates
+const LIVE_CACHE_TTL = 3 * 60 * 1000; // 3 minutes for live fixtures (180 seconds)
 const DATE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes for daily fixtures list
-const DETAILS_CACHE_TTL = 10 * 60 * 1000; // 10 minutes for match details, stats & lineups
+const DETAILS_CACHE_TTL = 3 * 60 * 1000; // 3 minutes for match details, stats & lineups
 
 // Quota / Rate-limit backoff flag to avoid error spamming when daily API limit is reached
 let quotaExhaustedUntil: number = 0;
@@ -220,8 +220,9 @@ export function normalizeName(name: string): string {
     .replace(/[أإآ]/g, "ا")
     .replace(/ة/g, "ه")
     .replace(/ى/g, "ي")
+    .replace(/\b(fc|cf|sc|ac|sk|fk|as|club|de|el|al|the)\b/gi, "")
     .replace(/[\s\-_.'’]/g, "")
-    .replace(/fc|cf|sc|ac|club|de|el|al|the/g, "")
+    .replace(/(fc|cf|sc|ac|sk|fk|kulubu)$/gi, "")
     .trim();
 }
 
@@ -327,11 +328,11 @@ const TEAM_ALIASES: Record<string, string[]> = {
   "wehda_ksa": ["al wehda", "الوحدة"],
 
   // Turkish Super Lig & Cup
-  "trabzonspor": ["trabzonspor", "طرابزون", "طرابزون سبور", "ترابزون"],
+  "trabzonspor": ["trabzonspor", "trabzonspor kulubu", "طرابزون", "طرابزون سبور", "ترابزون", "نادي طرابزون سبور"],
   "genclerbirligi": ["genclerbirligi", "غنتشليربيرليغي", "جينتشليربيرليجي", "جينكليربيرليجي"],
-  "galatasaray": ["galatasaray", "غلطة سراي", "غالاطا سراي"],
-  "fenerbahce": ["fenerbahce", "فنربخشة", "فنربخشه"],
-  "besiktas": ["besiktas", "بشكتاش", "بيشكتاش"],
+  "galatasaray": ["galatasaray", "galatasaray sk", "غلطة سراي", "غالاطا سراي", "غلطة سراي اس كي", "نادي غلطة سراي"],
+  "fenerbahce": ["fenerbahce", "fenerbahce sk", "فنربخشة", "فنربخشه"],
+  "besiktas": ["besiktas", "besiktas jk", "بشكتاش", "بيشكتاش"],
 
   // French Ligue 1 & 2
   "rennes": ["rennes", "stade rennais", "رين", "ستاد رين"],
@@ -422,13 +423,24 @@ export async function getLiveFixtures(): Promise<ApiFootballFixture[]> {
     return cachedLiveFixtures.data;
   }
 
+  // 1. Fetch from API-Football
   const json = await fetchFromApiFootball('/fixtures', { live: 'all' });
-  if (json && Array.isArray(json.response)) {
+  if (json && Array.isArray(json.response) && json.response.length > 0) {
     cachedLiveFixtures = {
       data: json.response,
       timestamp: Date.now(),
     };
     return json.response;
+  }
+
+  // 2. Seamless fallback to real-time live scoreboard
+  const fallbackLive = await fetchEspnLiveFixtures().catch(() => []);
+  if (fallbackLive && fallbackLive.length > 0) {
+    cachedLiveFixtures = {
+      data: fallbackLive,
+      timestamp: Date.now(),
+    };
+    return fallbackLive;
   }
 
   return cachedLiveFixtures ? cachedLiveFixtures.data : [];
@@ -443,12 +455,21 @@ export async function getFixturesByDate(dateStr: string): Promise<ApiFootballFix
   }
 
   const json = await fetchFromApiFootball('/fixtures', { date: dateStr });
-  if (json && Array.isArray(json.response)) {
+  if (json && Array.isArray(json.response) && json.response.length > 0) {
     cachedDateFixtures[dateStr] = {
       data: json.response,
       timestamp: Date.now(),
     };
     return json.response;
+  }
+
+  const fallbackDate = await fetchEspnLiveFixtures(dateStr.replace(/-/g, '')).catch(() => []);
+  if (fallbackDate && fallbackDate.length > 0) {
+    cachedDateFixtures[dateStr] = {
+      data: fallbackDate,
+      timestamp: Date.now(),
+    };
+    return fallbackDate;
   }
 
   return cachedDateFixtures[dateStr] ? cachedDateFixtures[dateStr].data : [];
@@ -663,17 +684,25 @@ export function formatEventsFromApiFootball(rawEvents: any[], homeTeamName: stri
  * Supported leagues for real-time live scoreboard fallback (UEFA, La Liga, Premier League, Serie A, etc.)
  */
 const ESPN_SUPPORTED_LEAGUES = [
+  'tur.1',
+  'sau.1',
+  'egy.1',
   'uefa.champions',
   'uefa.europa',
+  'uefa.europa.conf',
   'esp.1',
   'eng.1',
   'ita.1',
   'fra.1',
   'ger.1',
+  'ned.1',
+  'por.1',
+  'afc.champions',
+  'caf.champions',
 ];
 
 let cachedEspnFixtures: { data: ApiFootballFixture[]; timestamp: number } | null = null;
-const ESPN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes (300 seconds)
+const ESPN_CACHE_TTL = 3 * 60 * 1000; // 3 minutes (180 seconds)
 
 /**
  * Fetch live soccer fixtures directly from real-time scores provider without authentication
@@ -794,10 +823,25 @@ export async function fetchLiveMatchEvents(homeTeamName: string, awayTeamName: s
         const summaryData = await summaryRes.json();
         const keyEvents = summaryData.keyEvents || [];
 
+        const KNOWN_PLAYERS_AR: Record<string, string> = {
+          'mohamed salah': 'محمد صلاح',
+          'noah saviolo': 'نواه سافيولو',
+          'noah saffiolo': 'نواه سافيولو',
+          'mauro icardi': 'ماورو إيكاردي',
+          'dries mertens': 'دريس ميرتنز',
+          'victor osimhen': 'فيكتور أوسيمين',
+          'baris alper yilmaz': 'باريش ألبر يلماز',
+          'erling haaland': 'إيرلينغ هالاند',
+          'bukayo saka': 'بوكايو ساكا',
+          'vinicius jr': 'فينيسيوس جونيور',
+          'kylian mbappe': 'كيليان مبابي',
+        };
+
         return keyEvents.map((ev: any, idx: number) => {
           const text = ev.text || '';
           const minute = parseInt(ev.clock?.displayValue?.replace(/[^0-9]/g, '') || '0', 10);
-          const isHome = areTeamsMatching(text, homeTeamName);
+          const eventTeam = ev.team?.displayName || '';
+          const isHome = areTeamsMatching(eventTeam, homeTeamName) || areTeamsMatching(text, homeTeamName);
           let type = 'GOAL';
           if (text.toLowerCase().includes('goal')) {
             type = text.toLowerCase().includes('penalty') ? 'PENALTY_GOAL' : text.toLowerCase().includes('own goal') ? 'OWN_GOAL' : 'GOAL';
@@ -810,6 +854,8 @@ export async function fetchLiveMatchEvents(homeTeamName: string, awayTeamName: s
           }
 
           const rawPlayer = ev.participants?.[0]?.athlete?.displayName || text.split('(')[0]?.replace(/Goal!|Yellow Card|Red Card/i, '').trim();
+          const playerKey = (rawPlayer || '').toLowerCase().trim();
+          const playerAr = KNOWN_PLAYERS_AR[playerKey] || rawPlayer;
 
           return {
             id: `ev_espn_${idx}_${minute}`,
@@ -817,11 +863,11 @@ export async function fetchLiveMatchEvents(homeTeamName: string, awayTeamName: s
             type,
             team: isHome ? 'HOME' : 'AWAY',
             player: rawPlayer,
-            playerAr: rawPlayer,
+            playerAr: playerAr,
             playerName: rawPlayer,
-            playerNameAr: rawPlayer,
+            playerNameAr: playerAr,
             detail: text,
-            detailAr: text,
+            detailAr: type === 'GOAL' ? `هدف رائع بواسطة ${playerAr} (${minute}')` : text,
           };
         });
       }

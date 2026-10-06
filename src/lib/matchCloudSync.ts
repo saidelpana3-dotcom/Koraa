@@ -10,6 +10,8 @@ import {
 } from './firebase';
 import { Match, MatchStatus } from '../types';
 import { FINISHED_MATCHES_CATALOG, KNOWN_UPCOMING_MATCH_IDS, isMatchRemovedGlobally, isMatchObjectRemovedGlobally } from '../utils/predictionEvaluator';
+import { isMatchFinished } from '../data/matchHelpers';
+import { resolveFinalMatchScore, getPersistedMatchScore } from '../utils/matchScorePersistence';
 
 /**
  * Subscribes to real-time updates for all matches stored in Firestore.
@@ -88,11 +90,28 @@ export function mergeCloudMatches(
 
     // Priority 2: If cloud data marks the match as finished, lock it as FINISHED
     if (cloudData && (cloudData.status === 'FINISHED' || cloudData.isFinished === true || cloudData.time === 'انتهت' || cloudData.minute === 'انتهت')) {
+      const saved = getPersistedMatchScore(match.id);
+      const savedHome = saved && typeof saved.homeScore === 'number' ? saved.homeScore : 0;
+      const savedAway = saved && typeof saved.awayScore === 'number' ? saved.awayScore : 0;
+
+      const bestHome = (typeof cloudData.homeScore === 'number' && cloudData.homeScore > 0)
+        ? cloudData.homeScore
+        : ((typeof match.homeScore === 'number' && match.homeScore > 0) ? match.homeScore : (savedHome > 0 ? savedHome : (cloudData.homeScore ?? match.homeScore ?? 0)));
+      const bestAway = (typeof cloudData.awayScore === 'number' && cloudData.awayScore > 0)
+        ? cloudData.awayScore
+        : ((typeof match.awayScore === 'number' && match.awayScore > 0) ? match.awayScore : (savedAway > 0 ? savedAway : (cloudData.awayScore ?? match.awayScore ?? 0)));
+      let finalHome = bestHome;
+      let finalAway = bestAway;
+      if (finalHome === 0 && finalAway === 0) {
+        const resolved = resolveFinalMatchScore(match);
+        finalHome = resolved.homeScore;
+        finalAway = resolved.awayScore;
+      }
       return {
         ...match,
         ...cloudData,
-        homeScore: typeof cloudData.homeScore === 'number' ? cloudData.homeScore : match.homeScore,
-        awayScore: typeof cloudData.awayScore === 'number' ? cloudData.awayScore : match.awayScore,
+        homeScore: finalHome,
+        awayScore: finalAway,
         status: 'FINISHED' as MatchStatus,
         isFinished: true,
         time: 'انتهت',
@@ -102,12 +121,29 @@ export function mergeCloudMatches(
     }
 
     // Priority 3: If local match itself is already finished, preserve it as FINISHED
-    if (match.status === 'FINISHED' || match.isFinished === true || match.pointsDistributed === true) {
+    if (match.status === 'FINISHED' || match.isFinished === true || match.pointsDistributed === true || isMatchFinished(match)) {
+      const saved = getPersistedMatchScore(match.id);
+      const savedHome = saved && typeof saved.homeScore === 'number' ? saved.homeScore : 0;
+      const savedAway = saved && typeof saved.awayScore === 'number' ? saved.awayScore : 0;
+
+      const bestHome = (typeof match.homeScore === 'number' && match.homeScore > 0)
+        ? match.homeScore
+        : ((typeof cloudData?.homeScore === 'number' && cloudData.homeScore > 0) ? cloudData.homeScore : (savedHome > 0 ? savedHome : (match.homeScore ?? 0)));
+      const bestAway = (typeof match.awayScore === 'number' && match.awayScore > 0)
+        ? match.awayScore
+        : ((typeof cloudData?.awayScore === 'number' && cloudData.awayScore > 0) ? cloudData.awayScore : (savedAway > 0 ? savedAway : (match.awayScore ?? 0)));
+      let finalHome = bestHome;
+      let finalAway = bestAway;
+      if (finalHome === 0 && finalAway === 0) {
+        const resolved = resolveFinalMatchScore(match);
+        finalHome = resolved.homeScore;
+        finalAway = resolved.awayScore;
+      }
       return {
         ...match,
         ...(cloudData || {}),
-        homeScore: typeof cloudData?.homeScore === 'number' ? cloudData.homeScore : match.homeScore,
-        awayScore: typeof cloudData?.awayScore === 'number' ? cloudData.awayScore : match.awayScore,
+        homeScore: finalHome,
+        awayScore: finalAway,
         status: 'FINISHED' as MatchStatus,
         isFinished: true,
         time: 'انتهت',
@@ -126,7 +162,7 @@ export function mergeCloudMatches(
     }
 
     // Priority 5: Known unplayed upcoming match
-    if (KNOWN_UPCOMING_MATCH_IDS.has(match.id)) {
+    if (KNOWN_UPCOMING_MATCH_IDS.has(match.id) && !catalogEntry && !match.isFinished && !isMatchFinished(match)) {
       return {
         ...match,
         homeScore: 0,
@@ -141,9 +177,20 @@ export function mergeCloudMatches(
 
     // Priority 6: Merge any other cloud updates
     if (cloudData) {
+      // Guard: Do not allow an active or finished match to be reset to 0-0 UPCOMING
+      const wasLive = (match.status as string) === 'LIVE' || Boolean(match.isFinished);
+      if (wasLive && cloudData.status === 'UPCOMING' && cloudData.homeScore === 0 && cloudData.awayScore === 0) {
+        return match;
+      }
+      const currentHome = typeof match.homeScore === 'number' ? match.homeScore : 0;
+      const currentAway = typeof match.awayScore === 'number' ? match.awayScore : 0;
+      const safeHome = (currentHome > 0 && (!cloudData.homeScore || cloudData.homeScore === 0)) ? currentHome : (cloudData.homeScore ?? currentHome);
+      const safeAway = (currentAway > 0 && (!cloudData.awayScore || cloudData.awayScore === 0)) ? currentAway : (cloudData.awayScore ?? currentAway);
       return {
         ...match,
         ...cloudData,
+        homeScore: safeHome,
+        awayScore: safeAway,
       };
     }
 
@@ -257,11 +304,54 @@ export async function syncAllBaselineMatchesToCloud(initialMatches: Match[]): Pr
           time: 'انتهت',
           homeTeamAr: catData.homeTeamAr || '',
           awayTeamAr: catData.awayTeamAr || '',
-          customCoinsReward: catData.customCoinsReward || 50,
+          customCoinsReward: typeof catData.customCoinsReward === 'number' ? catData.customCoinsReward : 0,
           updatedAt: new Date().toISOString(),
         },
         { merge: true }
       ).catch(() => {});
+    }
+
+    // Sync all initial curated fixtures to Firestore with merge
+    if (Array.isArray(initialMatches)) {
+      for (const match of initialMatches) {
+        if (!match || !match.id) continue;
+        // Do not overwrite matches that have finished or have active scores
+        if (match.status === 'FINISHED' || match.isFinished === true || isMatchFinished(match)) continue;
+        if (typeof match.homeScore === 'number' && match.homeScore > 0) continue;
+        if (typeof match.awayScore === 'number' && match.awayScore > 0) continue;
+        const matchDocRef = doc(db, 'matches', match.id);
+        setDoc(
+          matchDocRef,
+          {
+            id: match.id,
+            homeScore: typeof match.homeScore === 'number' ? match.homeScore : 0,
+            awayScore: typeof match.awayScore === 'number' ? match.awayScore : 0,
+            status: match.status || 'UPCOMING',
+            isFinished: Boolean(match.isFinished),
+            time: match.time || '20:00',
+            homeTeam: match.homeTeam || '',
+            awayTeam: match.awayTeam || '',
+            homeTeamAr: match.homeTeamAr || '',
+            awayTeamAr: match.awayTeamAr || '',
+            homeLogo: match.homeLogo || '',
+            awayLogo: match.awayLogo || '',
+            homeColor: match.homeColor || '#000000',
+            awayColor: match.awayColor || '#000000',
+            leagueId: match.leagueId || '',
+            leagueName: match.leagueName || '',
+            leagueNameAr: match.leagueNameAr || '',
+            roundNameAr: match.roundNameAr || '',
+            leagueIcon: match.leagueIcon || '⚽',
+            date: match.date || '',
+            dateAr: match.dateAr || '',
+            venue: match.venue || '',
+            venueAr: match.venueAr || '',
+            customCoinsReward: typeof match.customCoinsReward === 'number' ? match.customCoinsReward : 0,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        ).catch(() => {});
+      }
     }
   } catch (err) {
     // Non-blocking background sync

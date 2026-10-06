@@ -345,8 +345,21 @@ export function playNotificationChime(type: 'GOAL' | 'MATCH_START' | 'CARD' | 'P
   }
 }
 
-// Dispatch a live push alert (Native push + In-app Toast + Firestore Log)
+// In-memory alert deduplication to strictly guarantee once-only notifications
+const recentAlertsTracker = new Map<string, number>();
+
+// Dispatch a live push alert (Native OS/Phone push + Audio chime + Firestore Log, NO in-app visual clutter)
 export async function sendMatchLiveNotification(payload: LiveNotificationPayload) {
+  const now = Date.now();
+  const notifTag = `${payload.matchId || 'gen'}_${payload.type}_${payload.titleAr || payload.title}`;
+
+  // Strict deduplication: Do not dispatch the exact same alert within 15 minutes
+  const lastTime = recentAlertsTracker.get(notifTag);
+  if (lastTime && (now - lastTime < 15 * 60 * 1000)) {
+    return;
+  }
+  recentAlertsTracker.set(notifTag, now);
+
   const timestamp = new Date().toISOString();
 
   // 1. Play audio chime
@@ -373,7 +386,7 @@ export async function sendMatchLiveNotification(payload: LiveNotificationPayload
         matchId: payload.matchId,
         icon: payload.homeLogo || '/pwa-192x192.png',
         badge: '/favicon-32x32.png',
-        tag: `kora-notif-${payload.matchId}-${payload.type}`,
+        tag: `kora-notif-${payload.matchId || 'all'}-${payload.type}`,
         ctaText: payload.ctaTextAr || '🎯 اتوقع الان'
       });
     } catch (err) {
@@ -381,14 +394,7 @@ export async function sendMatchLiveNotification(payload: LiveNotificationPayload
     }
   }
 
-  // 3. Dispatch window custom event for live in-app UI Toast Banner
-  if (typeof window !== 'undefined') {
-    setTimeout(() => {
-      window.dispatchEvent(new CustomEvent('kora-live-notification', { detail: payload }));
-    }, 0);
-  }
-
-  // 4. Save to Firestore notifications collection
+  // 3. Save to Firestore notifications collection
   try {
     await addDoc(collection(db, 'notifications'), {
       ...payload,

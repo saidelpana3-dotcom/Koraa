@@ -9,9 +9,12 @@
         "email": { "type": "string" },
         "photoURL": { "type": "string" },
         "points": { "type": "number" },
+        "diamonds": { "type": "number" },
         "exactPredictions": { "type": "number" },
-        "correctOutcomes": { "type": "number font" },
+        "correctOutcomes": { "type": "number" },
         "totalPredictions": { "type": "number" },
+        "tournamentsWonCount": { "type": "number" },
+        "wonTournamentRanks": { "type": "array" },
         "favoriteTeam": { "type": "string" },
         "rankBadge": { "type": "string" },
         "createdAt": { "type": "string" }
@@ -127,6 +130,37 @@
         "read": { "type": "boolean" }
       },
       "required": ["matchId", "title", "body", "timestamp"]
+    },
+    "leagueTournaments": {
+      "title": "League Tournaments",
+      "description": "League tournaments with 250 participant unlock threshold and top 3 coins prizes.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "titleAr": { "type": "string" },
+        "requiredParticipants": { "type": "number" },
+        "participantsCount": { "type": "number" },
+        "isUnlocked": { "type": "boolean" },
+        "status": { "type": "string" },
+        "prizesDistributed": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["titleAr", "requiredParticipants"]
+    },
+    "leagueTournamentParticipants": {
+      "title": "League Tournament Participants",
+      "description": "Enrolled participants, predictions, and standings in league tournaments.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "tournamentId": { "type": "string" },
+        "joinedAt": { "type": "string" },
+        "correctPredictionsCount": { "type": "number" },
+        "exactPredictionsCount": { "type": "number" },
+        "totalPredictionsCount": { "type": "number" }
+      },
+      "required": ["userId", "tournamentId"]
     }
   }
 }

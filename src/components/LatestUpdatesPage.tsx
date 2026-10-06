@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Language } from '../types';
+import { Language, ThemeMode } from '../types';
 import { 
   Sparkles, 
   Pin, 
@@ -24,6 +24,7 @@ interface LatestUpdatesPageProps {
   language: Language;
   onBack?: () => void;
   onInstallApp?: () => void;
+  theme?: ThemeMode;
 }
 
 export interface UpdateItem {
@@ -173,25 +174,6 @@ const UPDATES_LOG: UpdateItem[] = [
     detailsEn: [
       'Quick audio toggle button in the top header with active visual equalizer indicator.',
       'High-performance ambient crowd synthesizer designed for smooth browsing.'
-    ]
-  },
-  {
-    id: 'update-kora-ai-assistant-aug2026',
-    date: '13 أغسطس 2026',
-    titleAr: 'إطلاق محلل الذكاء الاصطناعي لكورة (Kora AI Soccer Analyst) 🤖',
-    titleEn: 'Launched Kora AI Soccer Tactical Analyst 🤖',
-    type: 'FEATURE_ADDED',
-    typeAr: 'ميزة جديدة 🤖',
-    typeEn: 'New Feature 🤖',
-    summaryAr: 'مساعد ذكي متخصص في كرة القدم يقدم تحليلات تكتيكية، مقارنة التشكيلات، إحصائيات المباريات، وتوقعات رياضية متقدمة.',
-    summaryEn: 'Specialized football AI assistant providing deep tactical analysis, lineup breakdowns, match stats, and smart predictions.',
-    detailsAr: [
-      'تحليل فني متكامل لكل مباراة في نافذة التفاصيل عبر الذكاء الاصطناعي.',
-      'محادثة مباشرة مع روبوت كورة للإجابة عن التكتيكات وأخبار الأندية.'
-    ],
-    detailsEn: [
-      'Deep AI-powered match analysis integrated directly into match details.',
-      'Interactive chat assistant for football stats, tactics, and club insights.'
     ]
   },
   {
