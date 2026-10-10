@@ -32,12 +32,14 @@ import {
   listenToNotificationLogs, 
   checkAndDispatchMatchNotifications,
   autoDetectAndBroadcastNewFeaturedMatches,
-  sendMatchLiveNotification
+  sendMatchLiveNotification,
+  syncFavoriteMatchSubscription
 } from './lib/notifications';
 import { 
   getActiveLeagueTournament, 
   checkAndSendDailyTournamentNotification, 
   syncPredictionToLeagueTournament,
+  syncLeagueTournamentWithServer,
   DEDICATED_LEAGUE_TOURNAMENT_MATCH_IDS
 } from './data/leagueTournaments';
 import { 
@@ -196,23 +198,72 @@ export default function App() {
   const [showFirstTimePermissions, setShowFirstTimePermissions] = useState<boolean>(false);
 
   // User Auth & Points State - Strict zero for unregistered guests
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(() => {
+    try {
+      const savedManual = localStorage.getItem('kora_manual_auth_user');
+      if (savedManual) {
+        const parsed = JSON.parse(savedManual);
+        if (parsed && parsed.uid && parsed.email) {
+          return parsed as unknown as User;
+        }
+      }
+    } catch (_) {}
+    return null;
+  });
   const [userPredictions, setUserPredictions] = useState<Record<string, { predictedHomeScore: number; predictedAwayScore: number }>>({});
   const userPredictionsRef = useRef<Record<string, { predictedHomeScore: number; predictedAwayScore: number }>>({});
   const [userPoints, setUserPoints] = useState<number>(0);
   const [userPredictionPoints, setUserPredictionPoints] = useState<number>(0);
   const [userDiamonds, setUserDiamonds] = useState<number>(0);
+  const userDiamondsRef = useRef<number>(0);
+  const lastDiamondsUpdateRef = useRef<number>(0);
 
-  const handleAddDiamonds = (amount: number) => {
-    if (!user?.uid) return;
-    setUserDiamonds((prev) => {
-      const next = Math.max(0, prev + amount);
-      try {
-        localStorage.setItem(`kora_user_diamonds_${user.uid}`, next.toString());
-      } catch (_) {}
-      setDoc(doc(db, 'users', user.uid), { diamonds: next, updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
-      return next;
-    });
+  useEffect(() => {
+    userDiamondsRef.current = userDiamonds;
+  }, [userDiamonds]);
+
+  const handleAddDiamonds = (amount: number): number => {
+    const userKey = user?.uid || 'guest';
+    const currentBalance =
+      typeof userDiamondsRef.current === 'number'
+        ? userDiamondsRef.current
+        : Number(localStorage.getItem(`kora_user_diamonds_${userKey}`) || 0);
+    const next = Math.max(0, currentBalance + amount);
+    const nowTs = Date.now();
+    userDiamondsRef.current = next;
+    lastDiamondsUpdateRef.current = nowTs;
+    setUserDiamonds(next);
+
+    try {
+      localStorage.setItem(`kora_user_diamonds_${userKey}`, next.toString());
+      localStorage.setItem(`kora_user_diamonds_updated_at_${userKey}`, nowTs.toString());
+      if (user?.uid) {
+        fetch('/api/user/sync-account', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: user.uid,
+            email: user.email,
+            displayName: user.displayName,
+            localDiamonds: next,
+          }),
+        }).catch(() => {});
+      }
+    } catch (_) {}
+
+    if (user?.uid && auth.currentUser?.uid === user.uid) {
+      setDoc(
+        doc(db, 'users', user.uid),
+        { diamonds: next, updatedAt: new Date(nowTs).toISOString() },
+        { merge: true }
+      ).catch(() => {});
+    }
+
+    try {
+      window.dispatchEvent(new CustomEvent('kora_diamonds_updated', { detail: next }));
+    } catch (_) {}
+
+    return next;
   };
 
   useEffect(() => {
@@ -686,6 +737,7 @@ export default function App() {
 
   // Real-time Push Notification Subscriptions & Logs Listener
   useEffect(() => {
+    syncLeagueTournamentWithServer(user).catch(() => {});
     const unsubSubs = listenToUserSubscriptions(user ? user.uid : '', (subs) => {
       setSubscriptions(subs);
     });
@@ -749,7 +801,7 @@ export default function App() {
     // Auto-update immediately upon site entrance/mount
     handleFootballApiSync(true);
 
-    // ⚡ Kickoff watcher: triggers immediately when today's 1st match begins
+    // ⚡ Kickoff watcher: triggers when today's 1st match begins (every 60s when visible)
     const kickoffWatcherInterval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         const hasActiveMatches = hasLiveOrStartedMatchesToday(matchesRef.current);
@@ -757,7 +809,7 @@ export default function App() {
           handleFootballApiSync();
         }
       }
-    }, 10000);
+    }, 60000);
 
     // ⚡ Periodic sync every 3 minutes (180,000 milliseconds) during matches to preserve connection
     const footballSyncInterval = setInterval(() => {
@@ -766,12 +818,11 @@ export default function App() {
       }
     }, 180000);
 
-    // ⚡ Auto-update whenever the user enters or returns to the application tab
+    // ⚡ Auto-update whenever the user enters or returns to the application tab (60s throttle to avoid proxy 429)
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        // Auto-refresh upon user entering if more than 15 seconds have passed
         const now = Date.now();
-        if (now - lastSyncTimestampRef.current > 15000) {
+        if (now - lastSyncTimestampRef.current > 60000) {
           handleFootballApiSync(true);
         }
       }
@@ -779,7 +830,7 @@ export default function App() {
 
     const handleWindowFocus = () => {
       const now = Date.now();
-      if (now - lastSyncTimestampRef.current > 15000) {
+      if (now - lastSyncTimestampRef.current > 60000) {
         handleFootballApiSync(true);
       }
     };
@@ -802,9 +853,10 @@ export default function App() {
   // 4. Match day morning (dayOffset === 0 / Today, morning >= 8 AM)
   // 5. Shortly before kickoff countdown alert
   useEffect(() => {
+    const activeUserId = user ? user.uid : 'guest';
     if (matches.length > 0) {
       autoDetectAndBroadcastNewFeaturedMatches(matches, language);
-      checkAndDispatchMatchNotifications(matches, language, subscriptions);
+      checkAndDispatchMatchNotifications(matches, language, subscriptions, favoriteMatchIds, activeUserId);
     }
 
     // Daily League Tournament Notification (Strictly throttled to 1 alert per day until tournament starts)
@@ -826,24 +878,58 @@ export default function App() {
     const notifInterval = setInterval(() => {
       if (matches.length > 0) {
         autoDetectAndBroadcastNewFeaturedMatches(matches, language);
-        checkAndDispatchMatchNotifications(matches, language, subscriptions);
+        checkAndDispatchMatchNotifications(matches, language, subscriptions, favoriteMatchIds, activeUserId);
       }
-    }, 60000);
+    }, 30000);
     return () => clearInterval(notifInterval);
-  }, [matches, language, subscriptions]);
+  }, [matches, language, subscriptions, favoriteMatchIds, user]);
 
   const isSaidUserCheck = (u: any): boolean => {
     if (!u) return false;
     const email = (u.email || '').toLowerCase().trim();
     const name = (u.displayName || '').toLowerCase().trim();
-    const uid = u.uid || u.userId || '';
-    return (
+    const uid = String(u.uid || u.userId || '').trim();
+    return Boolean(
       email === 'saidelpana3@gmail.com' ||
+      email === 'saidelbana520@gmail.com' ||
       email === 'elbanasaid79@gmail.com' ||
+      email.startsWith('saidelpana') ||
+      email.startsWith('saidelbana') ||
       uid === 'GVZ5QHmn5qeYgOYPaLdPcAXbcUg1' ||
+      uid === 'user_saidelpana3_gmail_com' ||
+      uid === 'user_saidelbana520_gmail_com' ||
       uid === 'user_said_el_bana' ||
-      name.includes('said el bana')
+      uid === '33074925' ||
+      uid === '40057253' ||
+      uid === '86600656' ||
+      name.includes('said el bana') ||
+      name.includes('saidelpana') ||
+      name.includes('saidelbana') ||
+      name.includes('سعيد البنا') ||
+      name === 'kora win'
     );
+  };
+
+  // Helper to resolve a user's prediction for a match even if home/away IDs or aliases vary across devices
+  const getPredictionForMatch = (match: Match | null | undefined, predsMap: Record<string, { predictedHomeScore: number; predictedAwayScore: number }> = userPredictions) => {
+    if (!match || !predsMap) return undefined;
+    if (predsMap[match.id]) return predsMap[match.id];
+
+    // Check reversed home/away slug e.g. m_epl_chelsea_fulham <-> m_epl_fulham_chelsea
+    const parts = match.id.split('_');
+    if (parts.length >= 4 && parts[0] === 'm') {
+      const leaguePrefix = parts.slice(0, 2).join('_');
+      const teamA = parts[2];
+      const teamB = parts.slice(3).join('_');
+      const reversedId = `${leaguePrefix}_${teamB}_${teamA}`;
+      if (predsMap[reversedId]) {
+        return {
+          predictedHomeScore: predsMap[reversedId].predictedAwayScore,
+          predictedAwayScore: predsMap[reversedId].predictedHomeScore,
+        };
+      }
+    }
+    return undefined;
   };
 
   // Listen to Auth State and Real-Time User Points with Strict Account Isolation
@@ -854,7 +940,45 @@ export default function App() {
     let unsubPayoutProfile: (() => void) | null = null;
     let previousUserUid: string | null = null;
 
-    const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
+    const handleActiveUser = async (firebaseUser: User | null) => {
+      let currentUser: User | null = firebaseUser;
+      if (!currentUser) {
+        try {
+          const savedManual = localStorage.getItem('kora_manual_auth_user');
+          if (savedManual) {
+            const parsed = JSON.parse(savedManual);
+            if (parsed && parsed.uid) {
+              currentUser = parsed as unknown as User;
+            }
+          }
+        } catch (_) {}
+      }
+
+      // If opened on mobile/PWA where localStorage is isolated from Google browser, restore active session from backend unless user explicitly signed out
+      if (!currentUser) {
+        const explicitlySignedOut = localStorage.getItem('kora_show_install_after_logout') === 'true';
+        if (!explicitlySignedOut) {
+          try {
+            const activeRes = await fetch('/api/user/active-session');
+            if (activeRes.ok) {
+              const activeData = await activeRes.json();
+              if (activeData?.success && activeData?.account?.userId) {
+                const acc = activeData.account;
+                const restoredUser = {
+                  uid: acc.userId,
+                  email: acc.email || '',
+                  displayName: acc.displayName || 'الكابتن',
+                  photoURL: acc.photoURL || '',
+                  isManualAuth: true,
+                };
+                localStorage.setItem('kora_manual_auth_user', JSON.stringify(restoredUser));
+                currentUser = restoredUser as unknown as User;
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
       // Clean up previous user snapshot listener if any
       if (unsubUserDoc) {
         unsubUserDoc();
@@ -873,12 +997,15 @@ export default function App() {
         unsubPayoutProfile = null;
       }
 
-      // Reset in-memory states immediately to prevent cross-account data bleed
-      setUserPredictions({});
-      userPredictionsRef.current = {};
-      setUserPoints(0);
-      setUserPredictionPoints(0);
-      setUserDiamonds(0);
+      // Only reset in-memory states if switching accounts or logging out
+      if (!currentUser || (previousUserUid && previousUserUid !== currentUser.uid)) {
+        setUserPredictions({});
+        userPredictionsRef.current = {};
+        setUserPoints(0);
+        setUserPredictionPoints(0);
+        userDiamondsRef.current = 0;
+        setUserDiamonds(0);
+      }
       try {
         localStorage.removeItem('kora_user_points');
         localStorage.removeItem('kora_ad_coins');
@@ -893,6 +1020,7 @@ export default function App() {
           if (hadLoggedOut) {
             localStorage.removeItem('kora_install_prompt_responded');
             localStorage.removeItem('kora_first_visit_install_prompt_responded');
+            localStorage.removeItem('kora_show_install_after_logout');
             setTimeout(() => {
               window.dispatchEvent(new CustomEvent('kora_show_first_visit_install_prompt'));
             }, 1200);
@@ -931,7 +1059,9 @@ export default function App() {
           setUserPoints(cachedCoins);
         }
 
-        const cachedDiamonds = Math.max(0, Number(localStorage.getItem(`kora_user_diamonds_${currentUser.uid}`) || 0));
+        const rawCachedDiamonds = localStorage.getItem(`kora_user_diamonds_${currentUser.uid}`);
+        const cachedDiamonds = rawCachedDiamonds !== null ? Math.max(0, Number(rawCachedDiamonds) || 0) : 0;
+        userDiamondsRef.current = cachedDiamonds;
         setUserDiamonds(cachedDiamonds);
 
         // Load favorite matches from local cache for this user
@@ -972,20 +1102,23 @@ export default function App() {
             if (Array.isArray(initialLocalPreds) && initialLocalPreds.length > 0) {
               const localMap: Record<string, { predictedHomeScore: number; predictedAwayScore: number }> = {};
               initialLocalPreds.forEach((p: any) => {
-                if (p.matchId && !isMatchRemovedGlobally(p.matchId)) {
-                  localMap[p.matchId] = {
-                    predictedHomeScore: p.predictedHomeScore,
-                    predictedAwayScore: p.predictedAwayScore,
+                const mId = p.matchId || p.id;
+                if (mId && !isMatchRemovedGlobally(mId)) {
+                  localMap[mId] = {
+                    predictedHomeScore: Number(p.predictedHomeScore ?? 0),
+                    predictedAwayScore: Number(p.predictedAwayScore ?? 0),
                   };
                 }
               });
-              setUserPredictions(localMap);
+              userPredictionsRef.current = { ...userPredictionsRef.current, ...localMap };
+              setUserPredictions((prev) => ({ ...prev, ...localMap }));
             }
           } catch (_) {}
         }
 
         // Migrate any guest predictions made before logging in (from link/Google/PWA) to this user account
         const guestKeys = ['kora_my_predictions_guest', 'kora_guest_predictions'];
+        let migratedAnyGuestPred = false;
         guestKeys.forEach((gk) => {
           const gRaw = localStorage.getItem(gk);
           if (gRaw) {
@@ -1005,6 +1138,7 @@ export default function App() {
                         userDisplayName: currentUser.displayName || 'الكابتن',
                       };
                       initialLocalPreds.push(migratedRecord);
+                      migratedAnyGuestPred = true;
                       setDoc(doc(db, 'predictions', migratedRecord.id), migratedRecord, { merge: true }).catch(() => {});
                     }
                   }
@@ -1014,6 +1148,20 @@ export default function App() {
             } catch (_) {}
           }
         });
+        if (migratedAnyGuestPred && initialLocalPreds.length > 0) {
+          const migratedMap: Record<string, { predictedHomeScore: number; predictedAwayScore: number }> = {};
+          initialLocalPreds.forEach((p: any) => {
+            const mId = p.matchId || p.id;
+            if (mId && !isMatchRemovedGlobally(mId)) {
+              migratedMap[mId] = {
+                predictedHomeScore: Number(p.predictedHomeScore ?? 0),
+                predictedAwayScore: Number(p.predictedAwayScore ?? 0),
+              };
+            }
+          });
+          userPredictionsRef.current = { ...userPredictionsRef.current, ...migratedMap };
+          setUserPredictions((prev) => ({ ...prev, ...migratedMap }));
+        }
 
         // 1. Attach Real-Time Listener to User Firestore Document
         const isAshrafFaroukUser = Boolean(
@@ -1103,16 +1251,47 @@ export default function App() {
 
         // 🌟 1. Instant Unified Cross-Device Account Sync from Backend Storage
         try {
-          const syncRes = await fetch(`/api/user/sync-account?userId=${encodeURIComponent(currentUser.uid)}&email=${encodeURIComponent(currentUser.email || '')}`);
+          const syncRes = await fetch(`/api/user/sync-account?userId=${encodeURIComponent(currentUser.uid)}&email=${encodeURIComponent(currentUser.email || '')}&displayName=${encodeURIComponent(currentUser.displayName || '')}`);
           if (syncRes.ok) {
             const syncData = await syncRes.json();
             if (syncData?.success && syncData?.account) {
               const acc = syncData.account;
               const isSaidUser = isSaidUserCheck(currentUser);
-              const minAllowed = isSaidUser ? 193 : 0;
+              const minAllowed = isSaidUser ? 209 : 0;
               const accCoins = Math.max(minAllowed, Number(acc.coins || acc.points || 0));
               const accPredPoints = Math.max(minAllowed, Number(acc.predictionPoints || 0));
               const currentLocalCoins = Number(localStorage.getItem(`kora_user_points_${currentUser.uid}`) || 0);
+
+              // Sync adRewardCoins, browseAdCoins, dailyGiftCoins, and coinsHistory across devices
+              if (typeof acc.adRewardCoins === 'number' && acc.adRewardCoins > 0) {
+                const curAd = Number(localStorage.getItem(`kora_ad_coins_${currentUser.uid}`) || 0);
+                if (acc.adRewardCoins > curAd) {
+                  localStorage.setItem(`kora_ad_coins_${currentUser.uid}`, String(acc.adRewardCoins));
+                }
+              }
+              if (typeof acc.browseAdCoins === 'number' && acc.browseAdCoins > 0) {
+                const curBr = Number(localStorage.getItem(`kora_browse_ad_coins_${currentUser.uid}`) || 0);
+                if (acc.browseAdCoins > curBr) {
+                  localStorage.setItem(`kora_browse_ad_coins_${currentUser.uid}`, String(acc.browseAdCoins));
+                }
+              }
+              if (typeof acc.dailyGiftCoins === 'number' && acc.dailyGiftCoins > 0) {
+                const curDaily = Number(localStorage.getItem(`kora_daily_coins_${currentUser.uid}`) || 0);
+                if (acc.dailyGiftCoins > curDaily) {
+                  localStorage.setItem(`kora_daily_coins_${currentUser.uid}`, String(acc.dailyGiftCoins));
+                }
+              }
+              if (Array.isArray(acc.coinsHistory) && acc.coinsHistory.length > 0) {
+                const histKey = `kora_coins_history_${currentUser.uid}`;
+                let localHist: any[] = [];
+                try {
+                  localHist = JSON.parse(localStorage.getItem(histKey) || '[]');
+                } catch (_) {}
+                const histMap = new Map<string, any>();
+                localHist.forEach((h: any, idx: number) => histMap.set(h.id || `${h.type}_${h.date || idx}`, h));
+                acc.coinsHistory.forEach((h: any, idx: number) => histMap.set(h.id || `${h.type}_${h.date || idx}`, h));
+                localStorage.setItem(histKey, JSON.stringify(Array.from(histMap.values())));
+              }
 
               const bestCoins = Math.max(accCoins, currentLocalCoins, minAllowed);
               if (bestCoins > 0) {
@@ -1122,39 +1301,84 @@ export default function App() {
               if (accPredPoints > 0) {
                 setUserPredictionPoints(accPredPoints);
               }
+              if (typeof acc.diamonds === 'number' && Date.now() - lastDiamondsUpdateRef.current >= 15000) {
+                const rawLocalDiamonds = localStorage.getItem(`kora_user_diamonds_${currentUser.uid}`);
+                const localDiamondsTs = Number(localStorage.getItem(`kora_user_diamonds_updated_at_${currentUser.uid}`) || 0);
+                const serverUpdatedTs = acc.updatedAt ? new Date(acc.updatedAt).getTime() : 0;
 
-              // If account has predictionsMap, immediately hydrate state
-              if (acc.predictionsMap && typeof acc.predictionsMap === 'object' && Object.keys(acc.predictionsMap).length > 0) {
+                if (rawLocalDiamonds !== null && localDiamondsTs > 0 && localDiamondsTs > serverUpdatedTs) {
+                  const localDiamondsVal = Math.max(0, Number(rawLocalDiamonds) || 0);
+                  userDiamondsRef.current = localDiamondsVal;
+                  setUserDiamonds(localDiamondsVal);
+                  fetch('/api/user/sync-account', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      userId: currentUser.uid,
+                      email: currentUser.email,
+                      displayName: currentUser.displayName,
+                      localDiamonds: localDiamondsVal,
+                    }),
+                  }).catch(() => {});
+                } else {
+                  const serverDiamondsVal = Math.max(0, Number(acc.diamonds) || 0);
+                  userDiamondsRef.current = serverDiamondsVal;
+                  setUserDiamonds(serverDiamondsVal);
+                  localStorage.setItem(`kora_user_diamonds_${currentUser.uid}`, String(serverDiamondsVal));
+                }
+              }
+
+              // Hydrate both predictionsMap and predictionsList into state and localStorage
+              const serverPredsMap: Record<string, { predictedHomeScore: number; predictedAwayScore: number }> = {};
+              if (acc.predictionsMap && typeof acc.predictionsMap === 'object') {
+                Object.entries(acc.predictionsMap).forEach(([mId, val]: [string, any]) => {
+                  if (mId && val && !isMatchRemovedGlobally(mId)) {
+                    serverPredsMap[mId] = {
+                      predictedHomeScore: Number(val.predictedHomeScore ?? 0),
+                      predictedAwayScore: Number(val.predictedAwayScore ?? 0),
+                    };
+                  }
+                });
+              }
+
+              const existingLocalRaw = localStorage.getItem(userStorageKey);
+              let existingLocalList: any[] = [];
+              try {
+                existingLocalList = JSON.parse(existingLocalRaw || '[]');
+              } catch (_) {}
+
+              const mergedMap = new Map<string, any>();
+              existingLocalList.forEach((p: any) => {
+                const mId = p.matchId || p.id;
+                if (mId && !isMatchRemovedGlobally(mId)) mergedMap.set(mId, p);
+              });
+              if (Array.isArray(acc.predictionsList)) {
+                acc.predictionsList.forEach((p: any) => {
+                  const mId = p.matchId || p.id;
+                  if (mId && !isMatchRemovedGlobally(mId)) {
+                    const ex = mergedMap.get(mId);
+                    if (!ex || !ex.updatedAt || !p.updatedAt || new Date(p.updatedAt) >= new Date(ex.updatedAt)) {
+                      mergedMap.set(mId, { ...ex, ...p, matchId: mId });
+                    }
+                    serverPredsMap[mId] = {
+                      predictedHomeScore: Number(p.predictedHomeScore ?? 0),
+                      predictedAwayScore: Number(p.predictedAwayScore ?? 0),
+                    };
+                  }
+                });
+              }
+
+              if (Object.keys(serverPredsMap).length > 0) {
                 setUserPredictions((prev) => {
-                  const updated = { ...prev, ...acc.predictionsMap };
+                  const updated = { ...prev, ...serverPredsMap };
                   userPredictionsRef.current = updated;
                   return updated;
                 });
               }
 
-              // If account has predictionsList, immediately hydrate local predictions cache
-              if (Array.isArray(acc.predictionsList) && acc.predictionsList.length > 0) {
-                const existingLocalRaw = localStorage.getItem(userStorageKey);
-                let existingLocalList: any[] = [];
-                try {
-                  existingLocalList = JSON.parse(existingLocalRaw || '[]');
-                } catch (_) {}
-
-                const mergedMap = new Map<string, any>();
-                existingLocalList.forEach((p: any) => {
-                  const mId = p.matchId || p.id;
-                  if (mId) mergedMap.set(mId, p);
-                });
-                acc.predictionsList.forEach((p: any) => {
-                  const mId = p.matchId || p.id;
-                  if (mId) {
-                    const ex = mergedMap.get(mId);
-                    if (!ex || !ex.updatedAt || !p.updatedAt || new Date(p.updatedAt) >= new Date(ex.updatedAt)) {
-                      mergedMap.set(mId, p);
-                    }
-                  }
-                });
+              if (mergedMap.size > 0) {
                 const combinedList = Array.from(mergedMap.values());
+                initialLocalPreds = combinedList;
                 localStorage.setItem(userStorageKey, JSON.stringify(combinedList));
                 window.dispatchEvent(new CustomEvent('kora_predictions_updated', { detail: combinedList }));
               }
@@ -1163,6 +1387,8 @@ export default function App() {
               if (Array.isArray(acc.favoriteMatches) && acc.favoriteMatches.length > 0) {
                 setFavoriteMatchIds((prev) => Array.from(new Set([...prev, ...acc.favoriteMatches])));
               }
+
+              window.dispatchEvent(new Event('kora_coins_updated'));
             }
           }
         } catch (syncErr) {
@@ -1177,12 +1403,12 @@ export default function App() {
               typeof data.coins === 'number' ? data.coins : 0,
               typeof data.points === 'number' ? data.points : 0
             );
-            const fsDiamonds = typeof data.diamonds === 'number' ? data.diamonds : 0;
-            const localDiamonds = Number(localStorage.getItem(`kora_user_diamonds_${currentUser.uid}`) || 0);
-            const bestDiamonds = Math.max(fsDiamonds, localDiamonds);
-            setUserDiamonds(bestDiamonds);
-            if (bestDiamonds > 0) {
-              localStorage.setItem(`kora_user_diamonds_${currentUser.uid}`, bestDiamonds.toString());
+            const fsDiamonds = typeof data.diamonds === 'number' ? Math.max(0, data.diamonds) : null;
+            const rawLocalDiamonds = localStorage.getItem(`kora_user_diamonds_${currentUser.uid}`);
+            if (rawLocalDiamonds === null && fsDiamonds !== null && Date.now() - lastDiamondsUpdateRef.current >= 15000) {
+              userDiamondsRef.current = fsDiamonds;
+              setUserDiamonds(fsDiamonds);
+              localStorage.setItem(`kora_user_diamonds_${currentUser.uid}`, fsDiamonds.toString());
             }
             const predPts = typeof data.predictionPoints === 'number' ? data.predictionPoints : 0;
             const fsDaily = typeof data.dailyGiftCoins === 'number' ? data.dailyGiftCoins : 0;
@@ -1277,7 +1503,7 @@ export default function App() {
               createdAt: new Date().toISOString(),
             };
             try {
-              await setDoc(userRef, initialProfile);
+              setDoc(userRef, initialProfile).catch(() => {});
               setUserPoints(initialCoins);
               setUserPredictionPoints(initialCoins);
               localStorage.setItem(`kora_user_points_${currentUser.uid}`, initialCoins.toString());
@@ -1338,7 +1564,7 @@ export default function App() {
             // Safely merge predictions from in-memory state, Firestore, and local cache so predictions are NEVER wiped or lost
             const mergedPredsMap = new Map<string, any>();
 
-            // 1. Current in-memory predictions map (from server sync or user state)
+            // 1. Current in-memory predictions map (from server sync or user state) - use epoch fallback so real updatedAt timestamps win
             if (userPredictionsRef.current && typeof userPredictionsRef.current === 'object') {
               Object.entries(userPredictionsRef.current).forEach(([mId, pred]: [string, any]) => {
                 if (mId && pred && !isMatchRemovedGlobally(mId)) {
@@ -1349,8 +1575,8 @@ export default function App() {
                     predictedHomeScore: Number(pred.predictedHomeScore ?? 0),
                     predictedAwayScore: Number(pred.predictedAwayScore ?? 0),
                     status: pred.status || 'PENDING',
-                    createdAt: new Date().toISOString(),
-                    updatedAt: new Date().toISOString(),
+                    createdAt: pred.createdAt || '1970-01-01T00:00:00.000Z',
+                    updatedAt: pred.updatedAt || '1970-01-01T00:00:00.000Z',
                   });
                 }
               });
@@ -1400,8 +1626,8 @@ export default function App() {
               const mId = p.matchId || p.id;
               if (mId) {
                 finalPredsMap[mId] = {
-                  predictedHomeScore: Number(p.predictedHomeScore),
-                  predictedAwayScore: Number(p.predictedAwayScore),
+                  predictedHomeScore: Number(p.predictedHomeScore ?? 0),
+                  predictedAwayScore: Number(p.predictedAwayScore ?? 0),
                 };
               }
             });
@@ -1464,7 +1690,7 @@ export default function App() {
             const extraAdRewardCoins = Math.max(storedAdCoins + storedBrowseCoins, historyAdCoins);
 
             const isSaidUser = isSaidUserCheck(currentUser);
-            const minAllowedCoins = isSaidUser ? 193 : 0;
+            const minAllowedCoins = isSaidUser ? 209 : 0;
             const finalEarnedCoins = Math.max(minAllowedCoins, (isAshrafFaroukUser ? Math.max(250, totalEarnedCoins) : totalEarnedCoins) + extraAdRewardCoins);
             const finalExactCount = isAshrafFaroukUser ? Math.max(5, exactPredictionsCount) : Math.max(isSaidUser ? 2 : 0, exactPredictionsCount);
             const calculatedNet = totalEarnedCoins - totalCoinsSpent - userClaimsSpent + currentBonus + extraAdRewardCoins;
@@ -1491,6 +1717,8 @@ export default function App() {
                 points: finalNetCoins,
                 coins: finalNetCoins,
                 dailyGiftCoins: currentBonus,
+                adRewardCoins: storedAdCoins,
+                browseAdCoins: storedBrowseCoins,
                 predictionPoints: finalEarnedCoins,
                 exactPredictions: finalExactCount,
                 correctPredictionsCount: finalExactCount,
@@ -1512,6 +1740,10 @@ export default function App() {
 
             // Also synchronize with backend persistent store for cross-device consistency
             try {
+              let coinsHistToSync: any[] = [];
+              try {
+                coinsHistToSync = JSON.parse(localStorage.getItem(`kora_coins_history_${currentUser.uid}`) || '[]');
+              } catch (_) {}
               fetch('/api/user/sync-account', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1522,6 +1754,10 @@ export default function App() {
                   localCoins: finalNetCoins,
                   localPredictionPoints: finalEarnedCoins,
                   localExactCount: finalExactCount,
+                  adRewardCoins: storedAdCoins,
+                  browseAdCoins: storedBrowseCoins,
+                  dailyGiftCoins: currentBonus,
+                  coinsHistory: coinsHistToSync,
                   predictions: evaluatedPredictions,
                   predictionsMap: finalPredsMap,
                 }),
@@ -1604,15 +1840,37 @@ export default function App() {
           } catch (_) {}
         }
         previousUserUid = null;
-        // User is guest (not registered): Load guest points and preferences
+        // User is guest (not registered): Load guest points, predictions, and preferences
         setUser(null);
         const guestId = getUserOrGuestNumericId(null);
         const guestSavedPts = Number(localStorage.getItem('kora_user_points_guest') || '0');
         setUserPoints(guestSavedPts);
         setUserPredictionPoints(0);
-        setUserDiamonds(0);
-        setUserPredictions({});
-        userPredictionsRef.current = {};
+        const guestSavedDiamonds = Math.max(0, Number(localStorage.getItem('kora_user_diamonds_guest') || '0'));
+        userDiamondsRef.current = guestSavedDiamonds;
+        setUserDiamonds(guestSavedDiamonds);
+
+        const guestPredsMap: Record<string, { predictedHomeScore: number; predictedAwayScore: number }> = {};
+        try {
+          const guestRaw = localStorage.getItem('kora_my_predictions_guest') || localStorage.getItem('kora_guest_predictions');
+          if (guestRaw) {
+            const parsedGuest = JSON.parse(guestRaw);
+            if (Array.isArray(parsedGuest)) {
+              parsedGuest.forEach((gp: any) => {
+                const mId = gp.matchId || gp.id;
+                if (mId && !isMatchRemovedGlobally(mId)) {
+                  guestPredsMap[mId] = {
+                    predictedHomeScore: Number(gp.predictedHomeScore ?? 0),
+                    predictedAwayScore: Number(gp.predictedAwayScore ?? 0),
+                  };
+                }
+              });
+            }
+          }
+        } catch (_) {}
+        setUserPredictions(guestPredsMap);
+        userPredictionsRef.current = guestPredsMap;
+
         setFavoriteMatchIds([]);
         refreshTodayPredictionsCount(guestId);
         if (unsubUserDoc) { unsubUserDoc(); unsubUserDoc = null; }
@@ -1620,10 +1878,20 @@ export default function App() {
         if (unsubClaims) { unsubClaims(); unsubClaims = null; }
         if (unsubPayoutProfile) { unsubPayoutProfile(); unsubPayoutProfile = null; }
       }
+    };
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+      handleActiveUser(firebaseUser);
     });
+
+    const onManualAuthChanged = () => {
+      handleActiveUser(auth.currentUser);
+    };
+    window.addEventListener('kora_manual_auth_changed', onManualAuthChanged);
 
     return () => {
       unsubscribeAuth();
+      window.removeEventListener('kora_manual_auth_changed', onManualAuthChanged);
       if (unsubUserDoc) unsubUserDoc();
       if (unsubPredictions) unsubPredictions();
       if (unsubClaims) unsubClaims();
@@ -1821,13 +2089,27 @@ export default function App() {
       const localPts = Number(localStorage.getItem(`kora_user_points_${userKey}`) || 0);
 
       const isSaidUser = isSaidUserCheck(user);
-      const minAllowed = isSaidUser ? 193 : 0;
+      const minAllowed = isSaidUser ? 209 : 0;
       const finalEarnedCoins = Math.max(minAllowed, (isAshrafFaroukUser ? Math.max(250, totalEarnedCoins) : totalEarnedCoins) + extraAdRewardCoins);
       const finalExactCount = isAshrafFaroukUser ? Math.max(5, exactPredictionsCount) : Math.max(isSaidUser ? 2 : 0, exactPredictionsCount);
       const calculatedNet = totalEarnedCoins - totalCoinsSpent - userClaimsSpent + currentBonus + extraAdRewardCoins;
       const finalNetCoins = isAshrafFaroukUser
         ? Math.max(250, calculatedNet, localPts)
         : Math.max(minAllowed, calculatedNet, localPts);
+
+      // Ensure userPredictions state has all evaluated predictions
+      const syncedPredsMap: Record<string, { predictedHomeScore: number; predictedAwayScore: number }> = { ...userPredictionsRef.current };
+      evaluatedPredictions.forEach((ep: any) => {
+        const mId = ep.matchId || ep.id;
+        if (mId && !isMatchRemovedGlobally(mId)) {
+          syncedPredsMap[mId] = {
+            predictedHomeScore: Number(ep.predictedHomeScore ?? 0),
+            predictedAwayScore: Number(ep.predictedAwayScore ?? 0),
+          };
+        }
+      });
+      userPredictionsRef.current = syncedPredsMap;
+      setUserPredictions(syncedPredsMap);
 
       localStorage.setItem(userStorageKey, JSON.stringify(evaluatedPredictions));
       localStorage.setItem(`kora_user_points_${userKey}`, finalNetCoins.toString());
@@ -1855,6 +2137,7 @@ export default function App() {
               exactPredictions: newExacts,
               correctPredictionsCount: newExacts,
               predictionsList: evaluatedPredictions,
+              predictionsMap: syncedPredsMap,
             }, { merge: true });
           } else {
             await setDoc(userRef, {
@@ -1864,6 +2147,7 @@ export default function App() {
               exactPredictions: finalExactCount,
               correctPredictionsCount: finalExactCount,
               predictionsList: evaluatedPredictions,
+              predictionsMap: syncedPredsMap,
             }, { merge: true });
           }
         } catch (e) {
@@ -1881,22 +2165,53 @@ export default function App() {
           }
         }
 
-        // Cross-device sync to server persistence store
+        // Cross-device sync to server persistence store (throttled to 30s on background eval to avoid proxy 429 Rate exceeded)
         try {
-          fetch('/api/user/sync-account', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              userId: user.uid,
-              email: user.email,
-              displayName: user.displayName,
-              localCoins: finalNetCoins,
-              localPredictionPoints: finalEarnedCoins,
-              localExactCount: finalExactCount,
-              predictions: evaluatedPredictions,
-              predictionsMap: userPredictions,
-            }),
-          }).catch(() => {});
+          const nowSyncMs = Date.now();
+          const lastEvalSyncMs = Number((window as any).__koraLastEvalSyncMs || 0);
+          if (nowSyncMs - lastEvalSyncMs >= 30000) {
+            (window as any).__koraLastEvalSyncMs = nowSyncMs;
+            let coinsHistToSync: any[] = [];
+            try {
+              coinsHistToSync = JSON.parse(localStorage.getItem(`kora_coins_history_${userKey}`) || '[]');
+            } catch (_) {}
+            fetch('/api/user/sync-account', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                userId: user.uid,
+                email: user.email,
+                displayName: user.displayName,
+                localCoins: finalNetCoins,
+                localPredictionPoints: finalEarnedCoins,
+                localExactCount: finalExactCount,
+                adRewardCoins: storedAdCoins,
+                browseAdCoins: storedBrowseCoins,
+                dailyGiftCoins: currentBonus,
+                coinsHistory: coinsHistToSync,
+                predictions: evaluatedPredictions,
+                predictionsMap: syncedPredsMap,
+              }),
+            })
+              .then((r) => r.json())
+              .then((syncData) => {
+                if (syncData?.success && syncData?.account) {
+                  const acc = syncData.account;
+                  if (acc.predictionsMap && typeof acc.predictionsMap === 'object') {
+                    setUserPredictions((prev) => {
+                      const next = { ...prev, ...acc.predictionsMap };
+                      userPredictionsRef.current = next;
+                      return next;
+                    });
+                  }
+                  if (typeof acc.coins === 'number' && acc.coins > finalNetCoins) {
+                    setUserPoints(acc.coins);
+                    localStorage.setItem(`kora_user_points_${user.uid}`, String(acc.coins));
+                  }
+                }
+              })
+              .catch(() => {});
+          }
         } catch (_) {}
       }
     };
@@ -1944,10 +2259,13 @@ export default function App() {
 
       // Mark logout flag for install prompt upon re-entry
       try {
+        localStorage.removeItem('kora_manual_auth_user');
         localStorage.removeItem('kora_install_prompt_responded');
         localStorage.removeItem('kora_first_visit_install_prompt_responded');
         localStorage.setItem('kora_show_install_after_logout', 'true');
+        localStorage.setItem('kora_guest_uid', `guest_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`);
         window.dispatchEvent(new Event('kora_user_signed_out'));
+        window.dispatchEvent(new Event('kora_manual_auth_changed'));
       } catch (_) {}
 
       // Immediately clear user state so UI updates instantly!
@@ -1974,7 +2292,10 @@ export default function App() {
 
   const handleToggleFavorite = (match: Match) => {
     setFavoriteMatchIds((prev) => {
-      const next = prev.includes(match.id) ? prev.filter((id) => id !== match.id) : [...prev, match.id];
+      const isCurrentlyFav = prev.includes(match.id);
+      const next = isCurrentlyFav ? prev.filter((id) => id !== match.id) : [...prev, match.id];
+      const activeUserId = user ? user.uid : 'guest';
+      syncFavoriteMatchSubscription(activeUserId, match, !isCurrentlyFav).catch(() => {});
       if (user) {
         localStorage.setItem(`kora_favorites_${user.uid}`, JSON.stringify(next));
         try {
@@ -2106,32 +2427,38 @@ export default function App() {
     // Prediction fee: 50 Orange Diamonds (50 ماسة رسوم التوقع) per match
     const DIAMOND_PREDICTION_FEE = 50;
     const existingDiamondsSpent = existingItem && typeof existingItem.diamondsSpent === 'number' ? existingItem.diamondsSpent : 0;
-    const diamondsFeeToDeduct = isEditingExisting ? 0 : DIAMOND_PREDICTION_FEE;
+    const hasAlreadyPaidDiamonds = isEditingExisting && existingDiamondsSpent >= DIAMOND_PREDICTION_FEE;
+    const diamondsFeeToDeduct = hasAlreadyPaidDiamonds ? 0 : DIAMOND_PREDICTION_FEE;
 
-    if (diamondsFeeToDeduct > 0 && userDiamonds < diamondsFeeToDeduct) {
+    const currentDiamondsBalance =
+      typeof userDiamondsRef.current === 'number'
+        ? userDiamondsRef.current
+        : Number(localStorage.getItem(`kora_user_diamonds_${userKey}`) || userDiamonds || 0);
+
+    if (diamondsFeeToDeduct > 0 && currentDiamondsBalance < diamondsFeeToDeduct) {
       setRewardToastMessage(
         language === 'ar'
-          ? `⚠️ تحتاج إلى 50 ماسة لتوقع أي مباراة (رصيدك: ${userDiamonds} ماسة). ابدأ اللعب الآن لجمع الماسات!`
-          : `⚠️ 50 Orange Diamonds required to predict any match (Balance: ${userDiamonds}). Start playing to earn diamonds!`
+          ? `⚠️ تحتاج إلى 50 ماسة لتوقع أي مباراة (رصيدك: ${currentDiamondsBalance} ماسة). ابدأ اللعب الآن لجمع الماسات!`
+          : `⚠️ 50 Orange Diamonds required to predict any match (Balance: ${currentDiamondsBalance}). Start playing to earn diamonds!`
       );
       setTimeout(() => setRewardToastMessage(null), 4500);
       return;
     }
 
+    let updatedDiamondsAfterFee = currentDiamondsBalance;
     if (diamondsFeeToDeduct > 0) {
-      handleAddDiamonds(-diamondsFeeToDeduct);
+      updatedDiamondsAfterFee = handleAddDiamonds(-diamondsFeeToDeduct);
       setRewardToastMessage(
         language === 'ar'
-          ? `🎯 تم حفظ توقعك بنجاح (تم خصم ${diamondsFeeToDeduct} ماسة رسوم التوقع)`
-          : `🎯 Prediction saved! (-${diamondsFeeToDeduct} Diamonds prediction fee)`
+          ? `🎯 تم حفظ توقعك بنجاح (تم خصم ${diamondsFeeToDeduct} ماسة برتقالية نهائياً)`
+          : `🎯 Prediction saved! (-${diamondsFeeToDeduct} Diamonds deducted permanently)`
       );
       setTimeout(() => setRewardToastMessage(null), 4000);
     }
 
-    const requiredFee = 0;
     const feeToDeduct = 0;
-    const totalCoinsSpent = (existingCoinsSpent > 0 ? existingCoinsSpent : 0);
-    const totalDiamondsSpent = existingDiamondsSpent > 0 ? existingDiamondsSpent : diamondsFeeToDeduct;
+    const totalCoinsSpent = existingCoinsSpent > 0 ? existingCoinsSpent : 0;
+    const totalDiamondsSpent = Math.max(existingDiamondsSpent, diamondsFeeToDeduct, DIAMOND_PREDICTION_FEE);
 
     const isFinished = match.status === 'FINISHED';
     const matchReward = typeof match.customCoinsReward === 'number' ? match.customCoinsReward : 0;
@@ -2139,17 +2466,17 @@ export default function App() {
     const pointsAwarded = isExactRight ? (matchReward > 0 ? matchReward : 10) : 0;
     const coinsAwarded = isExactRight ? matchReward : 0;
 
-    const newPredictionRecord = {
+    const newPredictionRecord: Record<string, any> = {
       id: predDocId,
       matchId: match.id,
-      matchHomeTeam: match.homeTeam,
-      matchHomeTeamAr: match.homeTeamAr,
-      matchAwayTeam: match.awayTeam,
-      matchAwayTeamAr: match.awayTeamAr,
-      predictedHomeScore: homeScore,
-      predictedAwayScore: awayScore,
-      matchHomeScore: match.homeScore,
-      matchAwayScore: match.awayScore,
+      matchHomeTeam: match.homeTeam || '',
+      matchHomeTeamAr: match.homeTeamAr || match.homeTeam || '',
+      matchAwayTeam: match.awayTeam || '',
+      matchAwayTeamAr: match.awayTeamAr || match.awayTeam || '',
+      predictedHomeScore: Number(homeScore),
+      predictedAwayScore: Number(awayScore),
+      ...(typeof match.homeScore === 'number' ? { matchHomeScore: match.homeScore } : {}),
+      ...(typeof match.awayScore === 'number' ? { matchAwayScore: match.awayScore } : {}),
       status: isFinished ? (isExactRight ? 'EXACT_SCORE' : 'MISSED') : 'PENDING',
       pointsEarned: pointsAwarded,
       coinsEarned: coinsAwarded,
@@ -2177,93 +2504,106 @@ export default function App() {
     localStorage.setItem(storageKey, JSON.stringify(predsArr));
     refreshTodayPredictionsCount(userKey);
 
-    // Update state so UI reacts immediately
-    setUserPredictions((prev) => ({
-      ...prev,
+    const updatedPredictionsMap = {
+      ...userPredictionsRef.current,
+      ...userPredictions,
       [match.id]: {
-        predictedHomeScore: homeScore,
-        predictedAwayScore: awayScore,
+        predictedHomeScore: Number(homeScore),
+        predictedAwayScore: Number(awayScore),
       },
-    }));
+    };
+    userPredictionsRef.current = updatedPredictionsMap;
+    setUserPredictions(updatedPredictionsMap);
 
-    // Auto-sync prediction to League Tournament if user is a participant and match is one of the 4 shared fixtures
+    // Notify all open tabs, windows, and components immediately
+    window.dispatchEvent(new CustomEvent('kora_predictions_updated', { detail: predsArr }));
+    window.dispatchEvent(new Event('kora_coins_updated'));
+
+    // Auto-sync prediction to League Tournament if user is a participant and match is one of the shared fixtures
     try {
       syncPredictionToLeagueTournament(user, match.id, homeScore, awayScore);
     } catch (_) {}
 
-    // Save/Update prediction in Firestore if logged in (overwriting existing doc with same deterministic predDocId)
+    // Save/Update prediction in backend & Firestore if logged in
     if (user) {
+      setIsSavingData(true);
+
+      // 1. Immediately push to server-side persistent store (guaranteed even if client Firestore is unauthenticated)
       try {
-        setIsSavingData(true);
-        const recordToSave = {
+        fetch('/api/user/sync-account', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: user.uid,
+            email: user.email,
+            displayName: user.displayName,
+            localCoins: userPoints,
+            localDiamonds: updatedDiamondsAfterFee,
+            predictions: predsArr,
+            predictionsMap: updatedPredictionsMap,
+            favoriteMatches: favoriteMatchIds,
+          }),
+        }).catch(() => {});
+      } catch (_) {}
+
+      // 2. Save to Firestore (cleaned of any undefined properties)
+      try {
+        const recordToSave: Record<string, any> = {
           ...newPredictionRecord,
           userId: user.uid,
           userEmail: (user.email || '').toLowerCase().trim(),
           userDisplayName: user.displayName || 'الكابتن',
         };
-        await setDoc(doc(db, 'predictions', predDocId), recordToSave, { merge: true });
+        Object.keys(recordToSave).forEach((k) => {
+          if (recordToSave[k] === undefined) delete recordToSave[k];
+        });
 
-        // Redundantly back up prediction to user's profile document for instant cross-device hydration
-        try {
-          const userRef = doc(db, 'users', user.uid);
-          await setDoc(userRef, {
-            [`predictionsMap.${match.id}`]: {
-              predictedHomeScore: homeScore,
-              predictedAwayScore: awayScore,
-              status: newPredictionRecord.status,
-              updatedAt: new Date().toISOString(),
-            }
-          }, { merge: true });
-        } catch (_) {}
+        await setDoc(doc(db, 'predictions', predDocId), recordToSave, { merge: true }).catch(() => {});
 
-        // Update points in user profile if fee was deducted or rewards won
+        const userRef = doc(db, 'users', user.uid);
+        await setDoc(
+          userRef,
+          {
+            diamonds: updatedDiamondsAfterFee,
+            predictionsMap: {
+              ...updatedPredictionsMap,
+              [match.id]: {
+                predictedHomeScore: Number(homeScore),
+                predictedAwayScore: Number(awayScore),
+                status: newPredictionRecord.status,
+                diamondsSpent: totalDiamondsSpent,
+                updatedAt: new Date().toISOString(),
+              },
+            },
+            predictionsList: predsArr,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        ).catch(() => {});
+
         if (feeToDeduct > 0 || isExactRight) {
-          const userRef = doc(db, 'users', user.uid);
-          const uSnap = await getDoc(userRef);
-          if (uSnap.exists()) {
+          const uSnap = await getDoc(userRef).catch(() => null);
+          if (uSnap && uSnap.exists()) {
             const uData = uSnap.data();
             const currentPts = uData.points || 0;
             const newFinalPts = Math.max(0, currentPts - feeToDeduct + (isExactRight ? coinsAwarded : 0));
-            await setDoc(userRef, {
-              points: newFinalPts,
-              coins: newFinalPts,
-              predictionPoints: (uData.predictionPoints || 0) + pointsAwarded,
-              exactPredictions: (uData.exactPredictions || 0) + (isExactRight ? 1 : 0),
-            }, { merge: true });
+            await setDoc(
+              userRef,
+              {
+                points: newFinalPts,
+                coins: newFinalPts,
+                predictionPoints: (uData.predictionPoints || 0) + pointsAwarded,
+                exactPredictions: (uData.exactPredictions || 0) + (isExactRight ? 1 : 0),
+              },
+              { merge: true }
+            ).catch(() => {});
           }
         }
-
-        // Push to server-side persistent store for instant cross-device synchronization
-        try {
-          fetch('/api/user/sync-account', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              userId: user.uid,
-              email: user.email,
-              displayName: user.displayName,
-              localCoins: userPoints,
-              predictions: predsArr,
-              predictionsMap: {
-                ...userPredictions,
-                [match.id]: {
-                  predictedHomeScore: homeScore,
-                  predictedAwayScore: awayScore,
-                },
-              },
-              favoriteMatches: favoriteMatchIds,
-            }),
-          }).catch(() => {});
-        } catch (_) {}
-
-        // Notify all open tabs, windows, and components
-        window.dispatchEvent(new CustomEvent('kora_predictions_updated', { detail: predsArr }));
-        window.dispatchEvent(new Event('kora_coins_updated'));
 
         setShowSyncSuccess(true);
         setTimeout(() => setShowSyncSuccess(false), 3000);
       } catch (err) {
-        console.error('Error saving prediction to Firestore:', err);
+        console.warn('Notice saving prediction to Firestore:', err);
       } finally {
         setIsSavingData(false);
       }
@@ -2464,9 +2804,7 @@ export default function App() {
   }, [todayMatches]);
 
   const todayTotalMatchesCount = todayMatches.length;
-  const todayPredictedMatchesCount = user 
-    ? todayMatches.filter((m) => Boolean(userPredictions[m.id])).length 
-    : 0;
+  const todayPredictedMatchesCount = todayMatches.filter((m) => Boolean(getPredictionForMatch(m))).length;
   const todayPredictionProgressPercent = todayTotalMatchesCount > 0 
     ? Math.min(100, Math.round((todayPredictedMatchesCount / todayTotalMatchesCount) * 100)) 
     : 0;
@@ -2532,7 +2870,7 @@ export default function App() {
       )}
 
       {/* Main App Container (Compact Display Width max-w-lg) */}
-      <main className="max-w-lg mx-auto px-2.5 sm:px-3.5 py-3 pb-28 sm:pb-32 space-y-4">
+      <main className="max-w-lg mx-auto px-2.5 sm:px-3.5 py-3 pb-36 sm:pb-40 space-y-4">
         
         {/* Global Ad Banner Slot (Displayed on Every Page - Paused temporarily per user request) */}
         {!IS_ONE_COIN_ADS_PAUSED && (
@@ -2637,7 +2975,7 @@ export default function App() {
                           title={isAr ? 'عرض رصيد الكوينز وتفاصيل المباريات الرابحة' : 'View Coins Earnings Breakdown'}
                         >
                           <span className="text-sm">🪙</span>
-                          <span className="font-mono text-sm">{user ? userPoints : 0}</span>
+                          <span className="font-mono text-sm">{userPoints}</span>
                           <span className="text-[10px] text-amber-600 dark:text-amber-400">{isAr ? 'كوينز' : 'Coins'}</span>
                         </button>
 
@@ -2689,29 +3027,29 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Pro Subscriptions (اشتراكات برو 👑) Banner */}
+                  {/* Pro Subscriptions (باقات شحن الماسات 💎) Banner */}
                   <div className={`p-3 rounded-2xl border flex items-center justify-between gap-3 shadow-xs ${
                     theme === 'dark'
-                      ? 'bg-gradient-to-r from-amber-500/20 via-slate-900 to-yellow-500/15 border-amber-500/40 text-white'
-                      : 'bg-gradient-to-r from-amber-100/90 via-white to-amber-50 border-amber-400 text-slate-900 shadow-amber-500/10'
+                      ? 'bg-gradient-to-r from-orange-500/20 via-slate-900 to-amber-500/15 border-orange-500/40 text-white'
+                      : 'bg-gradient-to-r from-orange-100/90 via-white to-amber-50 border-orange-400 text-slate-900 shadow-orange-500/10'
                   }`}>
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-500 flex items-center justify-center shrink-0 text-base shadow-inner">
-                        👑
+                      <div className="w-8 h-8 rounded-xl bg-orange-500/20 text-orange-500 flex items-center justify-center shrink-0 shadow-inner">
+                        <OrangeDiamondIcon className="w-5 h-5" />
                       </div>
                       <div className="min-w-0">
-                        <div className="text-xs font-black truncate text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
-                          <span>{isAr ? 'اشتراكات برو 👑 (شحن الكوينز)' : 'Kora PRO Subscriptions 👑'}</span>
-                          <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-slate-950 font-black text-[9px] uppercase">VIP</span>
+                        <div className="text-xs font-black truncate text-orange-700 dark:text-orange-300 flex items-center gap-1.5">
+                          <span>{isAr ? 'باقات شحن الماسات 💎' : 'Diamonds Top-Up Packages 💎'}</span>
+                          <span className="px-1.5 py-0.2 rounded-full bg-orange-500 text-white font-black text-[9px] uppercase">VIP</span>
                         </div>
                         <div className="text-[10px] text-slate-600 dark:text-slate-400 truncate">
-                          {isAr ? 'اشحن كوينز التوقعات فوراً عبر واتساب (من ٤٠ ج) ⚡' : 'Recharge prediction coins instantly via WhatsApp'}
+                          {isAr ? 'اشحن ماسات التوقعات فوراً عبر واتساب (من 50 جنيه) ⚡' : 'Recharge prediction diamonds instantly via WhatsApp'}
                         </div>
                       </div>
                     </div>
                     <button
                       onClick={() => setShowProSubscriptionModal(true)}
-                      className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black text-xs shrink-0 shadow-sm active:scale-95 transition-transform cursor-pointer"
+                      className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400 text-slate-950 font-black text-xs shrink-0 shadow-sm active:scale-95 transition-transform cursor-pointer"
                     >
                       {isAr ? 'عرض الباقات' : 'View Packs'}
                     </button>
@@ -2748,7 +3086,7 @@ export default function App() {
                           onToggleFavorite={handleToggleFavorite}
                           isSubscribed={subscriptions.some((s) => s.matchId === match.id)}
                           onOpenSubscribeModal={(m) => setSubscribeModalMatch(m)}
-                          userPrediction={userPredictions[match.id]}
+                          userPrediction={getPredictionForMatch(match)}
                           theme={theme}
                           isFreePrediction={false}
                           remainingFreePredictions={0}
@@ -2825,7 +3163,7 @@ export default function App() {
                           onToggleFavorite={handleToggleFavorite}
                           isSubscribed={subscriptions.some((s) => s.matchId === match.id)}
                           onOpenSubscribeModal={(m) => setSubscribeModalMatch(m)}
-                          userPrediction={userPredictions[match.id]}
+                          userPrediction={getPredictionForMatch(match)}
                           theme={theme}
                           isFreePrediction={false}
                           remainingFreePredictions={0}
@@ -2994,7 +3332,7 @@ export default function App() {
                       onToggleFavorite={handleToggleFavorite}
                       isSubscribed={subscriptions.some((s) => s.matchId === match.id)}
                       onOpenSubscribeModal={(m) => setSubscribeModalMatch(m)}
-                      userPrediction={userPredictions[match.id]}
+                      userPrediction={getPredictionForMatch(match)}
                       theme={theme}
                       isFreePrediction={false}
                       remainingFreePredictions={0}
@@ -3021,7 +3359,7 @@ export default function App() {
           language={language}
           onVotePrediction={handleVotePrediction}
           onSavePrediction={handleSavePrediction}
-          existingPrediction={userPredictions[selectedMatch.id] || (selectedMatch.id === 'm_epl_chelsea_fulham' ? userPredictions['m_epl_fulham_chelsea'] : undefined) || (selectedMatch.id === 'm_epl_fulham_chelsea' ? userPredictions['m_epl_chelsea_fulham'] : undefined)}
+          existingPrediction={getPredictionForMatch(selectedMatch)}
           isSubscribed={subscriptions.some((s) => s.matchId === selectedMatch.id)}
           onOpenSubscribeModal={(m) => setSubscribeModalMatch(m)}
           userPoints={userPoints}
@@ -3152,7 +3490,7 @@ export default function App() {
         onSignIn={handleSignIn}
       />
 
-      {/* Pro Subscriptions Modal (4 Packages + WhatsApp Direct Activation) */}
+      {/* Pro Subscriptions Modal (4 Diamonds Packages + WhatsApp Direct Activation) */}
       <ProSubscriptionModal
         isOpen={showProSubscriptionModal}
         onClose={() => setShowProSubscriptionModal(false)}
@@ -3160,6 +3498,7 @@ export default function App() {
         theme={theme}
         user={user}
         userPoints={userPoints}
+        userDiamonds={userDiamonds}
       />
 
       {/* Rewarded Ad Player Modal (Full-length ad player to earn 5 coins) */}

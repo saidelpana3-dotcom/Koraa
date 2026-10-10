@@ -1,9 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Trophy, Sparkles, Gift, ArrowRight, ShieldCheck, Flame, ListFilter, Radio, CheckCircle, CheckCircle2, Users, Flag } from 'lucide-react';
 import { Language, ThemeMode, Match } from '../types';
 import { MatchCard } from './MatchCard';
 import { LeagueTournamentView } from './LeagueTournamentView';
 import { FinishedTournamentsView } from './FinishedTournamentsView';
+import { syncLeagueTournamentWithServer } from '../data/leagueTournaments';
 
 interface TournamentMatchItemProps {
   match: Match;
@@ -74,6 +75,10 @@ export const FeaturedTournaments: React.FC<FeaturedTournamentsProps> = ({
 
   // Sub-tab filter state for match tournaments: 'all' | 'ongoing' | 'finished'
   const [filterTab, setFilterTab] = useState<'all' | 'ongoing' | 'finished'>('all');
+
+  useEffect(() => {
+    syncLeagueTournamentWithServer(user).catch(() => {});
+  }, [user?.uid, mainTab]);
 
   const visibleTournamentMatches = useMemo(() => {
     return tournamentMatches;
@@ -181,6 +186,7 @@ export const FeaturedTournaments: React.FC<FeaturedTournamentsProps> = ({
           theme={theme}
           user={user}
           allMatches={allMatches.length > 0 ? allMatches : tournamentMatches}
+          userPredictions={userPredictions}
           onOpenDetails={onOpenDetails}
           onSavePrediction={onSavePrediction}
           userDiamonds={userDiamonds}

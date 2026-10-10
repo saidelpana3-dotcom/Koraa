@@ -11,13 +11,39 @@ export interface VastAdItem {
   completeTrackingUrl?: string;
 }
 
-export const OFFICIAL_VAST_FEED_URL = 'https://vapid-size.com/dhm.FWzzduGLN/v/Z/GoUP/FeNm/9Yu/Z/Utl/kfPDTecj0/MATCci0/MBzcMGtfNCzcQ_x/Noz/QPz_NrwP';
+export const OFFICIAL_VAST_FEED_URL = 'https://massivesalad.com/dCm_FEzFd.GGNHv-ZJGKUL/Mc_nONPyQYRz-1T2UYVXWN_0YaZWa0bm-cd2elfkgP_SiZj6kbl2-5nloapWqQ_9sNtzuMv2-MxjyczxAN_wC';
 
 // Pre-configured verified video ads from this exact VAST feed
 export const DEFAULT_VAST_ADS: VastAdItem[] = [
   {
-    id: '641280',
+    id: '807119',
     adTitle: 'إعلان الشريك الرسمي #1',
+    duration: 30,
+    skipOffset: 5,
+    videoUrl: 'https://www.silent-basis.pro/301305/351513/807115_43309y480.mp4',
+    mediaFiles: [
+      { url: 'https://www.silent-basis.pro/301305/351513/807115_43309y.mp4', type: 'video/mp4', width: 1280, height: 720 },
+      { url: 'https://www.silent-basis.pro/301305/351513/807115_43309y480.mp4', type: 'video/mp4', width: 854, height: 480 },
+      { url: 'https://www.silent-basis.pro/301305/351513/807115_43309y360.mp4', type: 'video/mp4', width: 640, height: 360 },
+    ],
+    clickThroughUrl: OFFICIAL_VAST_FEED_URL,
+  },
+  {
+    id: '534949',
+    adTitle: 'إعلان الشريك الرسمي #2',
+    duration: 30,
+    skipOffset: 5,
+    videoUrl: 'https://www.silent-basis.pro/71940/283558/534798_77a4cy480.mp4',
+    mediaFiles: [
+      { url: 'https://www.silent-basis.pro/71940/283558/534798_77a4cy.mp4', type: 'video/mp4', width: 720, height: 720 },
+      { url: 'https://www.silent-basis.pro/71940/283558/534798_77a4cy480.mp4', type: 'video/mp4', width: 480, height: 480 },
+      { url: 'https://www.silent-basis.pro/71940/283558/534798_77a4cy360.mp4', type: 'video/mp4', width: 360, height: 360 },
+    ],
+    clickThroughUrl: OFFICIAL_VAST_FEED_URL,
+  },
+  {
+    id: '641280',
+    adTitle: 'إعلان الشريك الرسمي #3',
     duration: 29,
     skipOffset: 15,
     videoUrl: 'https://www.silent-basis.pro/301305/351376/641280_e5a15y.mp4',
@@ -25,31 +51,6 @@ export const DEFAULT_VAST_ADS: VastAdItem[] = [
       { url: 'https://www.silent-basis.pro/301305/351376/641280_e5a15y.mp4', type: 'video/mp4', width: 1024, height: 576 },
       { url: 'https://www.silent-basis.pro/301305/351376/641280_e5a15y480.mp4', type: 'video/mp4', width: 854, height: 480 },
       { url: 'https://www.silent-basis.pro/301305/351376/641280_e5a15y360.mp4', type: 'video/mp4', width: 640, height: 360 },
-    ],
-    clickThroughUrl: OFFICIAL_VAST_FEED_URL,
-  },
-  {
-    id: '1161474',
-    adTitle: 'إعلان الشريك الرسمي #2',
-    duration: 24,
-    skipOffset: 15,
-    videoUrl: 'https://www.silent-basis.pro/301305/351387/1161474_f7312y.mp4',
-    mediaFiles: [
-      { url: 'https://www.silent-basis.pro/301305/351387/1161474_f7312y.mp4', type: 'video/mp4', width: 1024, height: 576 },
-      { url: 'https://www.silent-basis.pro/301305/351387/1161474_f7312y480.mp4', type: 'video/mp4', width: 854, height: 480 },
-      { url: 'https://www.silent-basis.pro/301305/351387/1161474_f7312y360.mp4', type: 'video/mp4', width: 640, height: 360 },
-    ],
-    clickThroughUrl: OFFICIAL_VAST_FEED_URL,
-  },
-  {
-    id: '559471',
-    adTitle: 'إعلان الشريك الرسمي #3',
-    duration: 17,
-    skipOffset: 15,
-    videoUrl: 'https://www.silent-basis.pro/152327/199276/559471_5b9bay.mp4',
-    mediaFiles: [
-      { url: 'https://www.silent-basis.pro/152327/199276/559471_5b9bay.mp4', type: 'video/mp4', width: 854, height: 480 },
-      { url: 'https://www.silent-basis.pro/152327/199276/559471_5b9bay480.mp4', type: 'video/mp4', width: 640, height: 360 },
     ],
     clickThroughUrl: OFFICIAL_VAST_FEED_URL,
   },

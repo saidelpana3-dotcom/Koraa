@@ -42,7 +42,7 @@ export const SubscribeMatchModal: React.FC<SubscribeMatchModalProps> = ({
     currentSubscription?.notifySmartReminder !== undefined ? currentSubscription.notifySmartReminder : true
   );
   const [reminderIntervalMinutes, setReminderIntervalMinutes] = useState(
-    currentSubscription?.reminderIntervalMinutes || getGlobalSmartReminderInterval() || 30
+    currentSubscription?.reminderIntervalMinutes || getGlobalSmartReminderInterval() || 15
   );
   const [loading, setLoading] = useState(false);
   const [testSent, setTestSent] = useState(false);

@@ -38,22 +38,31 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
       setPlatformTab('android');
     }
 
-    // Check if already running in standalone PWA mode
+    // Check if already running in standalone PWA mode (do NOT check android-app:// referrer as WhatsApp/Telegram links use that)
     const checkStandalone = () => {
       const isStandaloneMode =
         window.matchMedia('(display-mode: standalone)').matches ||
-        (window.navigator as any).standalone === true ||
-        document.referrer.includes('android-app://');
+        (window.navigator as any).standalone === true;
       setIsStandalone(isStandaloneMode);
     };
 
     checkStandalone();
+
+    if ((window as any).deferredPwaPrompt || (window as any).__koraDeferredInstallPrompt) {
+      setDeferredPrompt((window as any).deferredPwaPrompt || (window as any).__koraDeferredInstallPrompt);
+    }
 
     // Catch PWA beforeinstallprompt event
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e);
       (window as any).deferredPwaPrompt = e;
+      (window as any).__koraDeferredInstallPrompt = e;
+    };
+
+    const handlePwaReady = () => {
+      const existing = (window as any).deferredPwaPrompt || (window as any).__koraDeferredInstallPrompt;
+      if (existing) setDeferredPrompt(existing);
     };
 
     // Listen for appinstalled event
@@ -61,6 +70,8 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
       setInstalledSuccess(true);
       setDeferredPrompt(null);
       (window as any).deferredPwaPrompt = null;
+      (window as any).__koraDeferredInstallPrompt = null;
+      setShowGuideModal(false);
       setIsStandalone(true);
     };
 
@@ -71,11 +82,13 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('kora_pwa_install_ready', handlePwaReady);
     window.addEventListener('appinstalled', handleAppInstalled);
     window.addEventListener('kora_trigger_pwa_install', handleTriggerCustom);
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('kora_pwa_install_ready', handlePwaReady);
       window.removeEventListener('appinstalled', handleAppInstalled);
       window.removeEventListener('kora_trigger_pwa_install', handleTriggerCustom);
     };
@@ -83,28 +96,29 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
 
   const triggerDirectInstall = async () => {
     setIsDismissed(false);
-    setShowGuideModal(true);
 
-    // Try native PWA prompt if available
-    const promptEvent = deferredPrompt || (window as any).deferredPwaPrompt;
+    // Prioritize native PWA prompt directly on user click without covering it with a modal
+    const promptEvent = deferredPrompt || (window as any).deferredPwaPrompt || (window as any).__koraDeferredInstallPrompt;
     if (promptEvent) {
       try {
         await promptEvent.prompt();
         const choiceResult = await promptEvent.userChoice;
         if (choiceResult && choiceResult.outcome === 'accepted') {
           setInstalledSuccess(true);
+          setShowGuideModal(false);
           setIsStandalone(true);
         }
         setDeferredPrompt(null);
         (window as any).deferredPwaPrompt = null;
+        (window as any).__koraDeferredInstallPrompt = null;
+        return;
       } catch (err) {
         console.error('PWA install prompt error:', err);
       }
     }
-  };
 
-  const handleOpenInNewTab = () => {
-    window.open(window.location.href, '_blank');
+    // Fallback when native prompt isn't directly available (iOS, iframe, or in-app browser)
+    setShowGuideModal(true);
   };
 
   const handleInstallClick = () => {
@@ -112,13 +126,7 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
   };
 
   const handlePwaInstall = async () => {
-    setPwaMsg(
-      isAr
-        ? '📲 إضافة إلى الشاشة الرئيسية: جاري طلب التثبيت! إذا لم تظهر النافذة المنبثقة التلقائية، افتح قائمة المتصفح (⋮) واضغط "إضافة إلى الشاشة الرئيسية"'
-        : '📲 Add to Home Screen: Requesting installation! If auto prompt does not appear, open browser menu (⋮) and select "Add to Home Screen"'
-    );
-
-    const promptEvent = deferredPrompt || (window as any).deferredPwaPrompt;
+    const promptEvent = deferredPrompt || (window as any).deferredPwaPrompt || (window as any).__koraDeferredInstallPrompt;
     if (promptEvent) {
       try {
         await promptEvent.prompt();
@@ -126,26 +134,48 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
         if (choiceResult && choiceResult.outcome === 'accepted') {
           setInstalledSuccess(true);
           setIsStandalone(true);
+          setShowGuideModal(false);
           setPwaMsg(
             isAr
-              ? '✅ تم إضافة التطبيق بنجاح إلى الشاشة الرئيسية!'
-              : '✅ App successfully added to Home Screen!'
+              ? '✅ تم تثبيت التطبيق بنجاح على الشاشة الرئيسية!'
+              : '✅ App successfully installed to Home Screen!'
           );
         }
         setDeferredPrompt(null);
         (window as any).deferredPwaPrompt = null;
+        (window as any).__koraDeferredInstallPrompt = null;
+        return;
       } catch (err) {
         console.error('PWA prompt error:', err);
       }
+    }
+
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+    let inIframe = false;
+    try {
+      inIframe = window.self !== window.top;
+    } catch {
+      inIframe = true;
+    }
+
+    if (isIOS) {
+      setPwaMsg(
+        isAr
+          ? '📲 للتثبيت على آيفون: اضغط زر المشاركة (Share ⎋) أسفل متصفح Safari ثم اختر "إضافة إلى الصفحة الرئيسية ➕"'
+          : '📲 On iPhone: Tap Share button (⎋) in Safari then select "Add to Home Screen ➕"'
+      );
+    } else if (inIframe) {
+      setPwaMsg(
+        isAr
+          ? '📲 لتثبيت التطبيق بنقرة واحدة: اضغط على زر "افتح التطبيق في نافذة مستقلة جديدة 🚀" بالأسفل ثم اضغط تثبيت التطبيق.'
+          : '📲 For 1-click install: Tap "Open App in New Standalone Window 🚀" below then tap Install App.'
+      );
     } else {
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
-      if (isIOS) {
-        setPwaMsg(
-          isAr
-            ? '📲 إضافة إلى الشاشة الرئيسية (آيفون): اضغط زر المشاركة (Share 🔗) أسفل المتصفح ثم اختر "إضافة إلى الشاشة الرئيسية"'
-            : '📲 Add to Home Screen (iOS): Tap Share button (🔗) in Safari then select "Add to Home Screen"'
-        );
-      }
+      setPwaMsg(
+        isAr
+          ? '📲 لتثبيت التطبيق الآن: افتح قائمة المتصفح (⋮) أعلى الشاشة واضغط على "تثبيت التطبيق" أو "إضافة إلى الشاشة الرئيسية".'
+          : '📲 Open browser menu (⋮) at the top corner and select "Install App" or "Add to Home Screen".'
+      );
     }
   };
 
@@ -398,15 +428,16 @@ export const InstallAppBanner: React.FC<InstallAppBannerProps> = ({ language, th
                 </div>
               )}
 
-              {/* Open in new tab button */}
-              <button
-                type="button"
-                onClick={handleOpenInNewTab}
+              {/* Open in new tab anchor link */}
+              <a
+                href={typeof window !== 'undefined' ? window.location.href : '/'}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs text-center border border-slate-700 flex items-center justify-center gap-1.5 cursor-pointer transition-all"
               >
                 <ExternalLink className="w-4 h-4 text-emerald-400" />
                 <span>{isAr ? 'افتح التطبيق في نافذة مستقلة جديدة 🚀' : 'Open App in New Standalone Window 🚀'}</span>
-              </button>
+              </a>
             </div>
 
             {/* Modal Footer */}

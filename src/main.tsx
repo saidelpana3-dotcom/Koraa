@@ -39,6 +39,8 @@ if (typeof window !== 'undefined') {
       lower === 'script error.' ||
       lower === 'script error' ||
       lower.includes('script error') ||
+      lower.includes('nap5k') ||
+      lower.includes('ripenhopperwitty') ||
       lower.includes('profitableratecpmnetwork') ||
       lower.includes('effectivecpmnetwork') ||
       lower.includes('slimgather') ||

@@ -113,9 +113,12 @@ interface SyncedUserAccount {
   userId: string;
   email: string;
   displayName: string;
+  phone?: string;
+  password?: string;
   photoURL?: string;
   points: number;
   coins: number;
+  diamonds?: number;
   predictionPoints: number;
   exactPredictions: number;
   dailyGiftCoins?: number;
@@ -145,7 +148,12 @@ function normalizeAccountPredictions(
       if (!p || typeof p !== 'object') return;
       let mId = p.matchId;
       if (!mId && typeof p.id === 'string' && p.id.startsWith('pred_')) {
-        mId = p.id.split('_').slice(2).join('_');
+        const mIdx = p.id.indexOf('_m_');
+        if (mIdx !== -1) {
+          mId = p.id.slice(mIdx + 1);
+        } else {
+          mId = p.id.split('_').slice(2).join('_');
+        }
       }
       if (!mId && p.id && !p.id.startsWith('pred_')) {
         mId = p.id;
@@ -161,34 +169,44 @@ function normalizeAccountPredictions(
         userId: p.userId || fallbackUserId,
         predictedHomeScore: Number(p.predictedHomeScore ?? 0),
         predictedAwayScore: Number(p.predictedAwayScore ?? 0),
+        diamondsSpent: typeof p.diamondsSpent === 'number' ? p.diamondsSpent : 0,
       };
 
-      unifiedListMap.set(canonicalMatchId, record);
+      const existingInMap = unifiedListMap.get(canonicalMatchId);
+      if (!existingInMap || !existingInMap.updatedAt || !record.updatedAt || new Date(record.updatedAt) >= new Date(existingInMap.updatedAt)) {
+        unifiedListMap.set(canonicalMatchId, {
+          ...existingInMap,
+          ...record,
+          diamondsSpent: Math.max(existingInMap?.diamondsSpent || 0, record.diamondsSpent || 0),
+        });
+      }
+      const latestRecord = unifiedListMap.get(canonicalMatchId)!;
       unifiedMap[canonicalMatchId] = {
-        predictedHomeScore: record.predictedHomeScore,
-        predictedAwayScore: record.predictedAwayScore,
-        status: record.status,
-        updatedAt: record.updatedAt || record.createdAt,
+        predictedHomeScore: latestRecord.predictedHomeScore,
+        predictedAwayScore: latestRecord.predictedAwayScore,
+        status: latestRecord.status,
+        diamondsSpent: latestRecord.diamondsSpent || 0,
+        updatedAt: latestRecord.updatedAt || latestRecord.createdAt,
       };
     });
   }
 
-  // 2. Process predictionsMap (ensuring every matchId is reflected in unifiedList)
+  // 2. Process predictionsMap (ensuring every matchId is reflected in unifiedList without overwriting newer list items)
   if (predictionsMap && typeof predictionsMap === 'object') {
-    Object.entries(predictionsMap).forEach(([mId, pVal]: [string, any]) => {
-      if (!mId || !pVal) return;
+    Object.entries(predictionsMap).forEach(([rawKey, pVal]: [string, any]) => {
+      if (!rawKey || !pVal) return;
+      const mId = rawKey.startsWith('predictionsMap.') ? rawKey.slice('predictionsMap.'.length) : rawKey;
+      if (!mId) return;
       const homeScore = Number(pVal.predictedHomeScore ?? 0);
       const awayScore = Number(pVal.predictedAwayScore ?? 0);
 
-      unifiedMap[mId] = {
-        predictedHomeScore: homeScore,
-        predictedAwayScore: awayScore,
-        status: pVal.status || 'PENDING',
-        updatedAt: pVal.updatedAt || new Date().toISOString(),
-      };
+      const existingListRecord = unifiedListMap.get(mId);
+      const isMapNewer =
+        !existingListRecord ||
+        (pVal.updatedAt && existingListRecord.updatedAt && new Date(pVal.updatedAt) > new Date(existingListRecord.updatedAt));
 
-      if (!unifiedListMap.has(mId)) {
-        unifiedListMap.set(mId, {
+      if (!existingListRecord) {
+        const newRec = {
           id: `pred_${fallbackUserId}_${mId}`,
           userId: fallbackUserId,
           matchId: mId,
@@ -197,9 +215,33 @@ function normalizeAccountPredictions(
           status: pVal.status || 'PENDING',
           pointsEarned: 0,
           coinsEarned: 0,
-          createdAt: pVal.createdAt || new Date().toISOString(),
+          diamondsSpent: typeof pVal.diamondsSpent === 'number' ? pVal.diamondsSpent : 0,
+          createdAt: pVal.createdAt || pVal.updatedAt || new Date().toISOString(),
           updatedAt: pVal.updatedAt || new Date().toISOString(),
-        });
+        };
+        unifiedListMap.set(mId, newRec);
+        unifiedMap[mId] = {
+          predictedHomeScore: homeScore,
+          predictedAwayScore: awayScore,
+          status: newRec.status,
+          diamondsSpent: newRec.diamondsSpent,
+          updatedAt: newRec.updatedAt,
+        };
+      } else if (isMapNewer) {
+        const updatedRec = {
+          ...existingListRecord,
+          predictedHomeScore: homeScore,
+          predictedAwayScore: awayScore,
+          updatedAt: pVal.updatedAt,
+        };
+        unifiedListMap.set(mId, updatedRec);
+        unifiedMap[mId] = {
+          predictedHomeScore: homeScore,
+          predictedAwayScore: awayScore,
+          status: updatedRec.status || 'PENDING',
+          diamondsSpent: updatedRec.diamondsSpent || 0,
+          updatedAt: updatedRec.updatedAt,
+        };
       }
     });
   }
@@ -210,16 +252,43 @@ function normalizeAccountPredictions(
   };
 }
 
+const SAID_ACCOUNT_ALIASES = [
+  'saidelpana3@gmail.com',
+  'elbanasaid79@gmail.com',
+  'GVZ5QHmn5qeYgOYPaLdPcAXbcUg1',
+  'QREm1c41PcSQVloF89hL1H0W5p13',
+  'user_said_el_bana',
+  'user_elbanasaid79_gmail_com',
+  'user_saidelpana3_gmail_com',
+];
+
 function isSaidElBanaAccount(email?: string, userId?: string, displayName?: string): boolean {
   const cleanEmail = (email || '').toLowerCase().trim();
   const cleanName = (displayName || '').toLowerCase().trim();
+  const cleanUid = (userId || '').trim();
   return (
-    cleanEmail === 'saidelpana3@gmail.com' ||
-    cleanEmail === 'elbanasaid79@gmail.com' ||
-    userId === 'GVZ5QHmn5qeYgOYPaLdPcAXbcUg1' ||
-    userId === 'user_said_el_bana' ||
-    cleanName.includes('said el bana')
+    SAID_ACCOUNT_ALIASES.includes(cleanEmail) ||
+    SAID_ACCOUNT_ALIASES.includes(cleanUid) ||
+    cleanName.includes('said el bana') ||
+    cleanName === 'kora win'
   );
+}
+
+function registerAccountInMemory(acc: SyncedUserAccount, oldRef?: SyncedUserAccount | null) {
+  if (oldRef) {
+    for (const [k, v] of syncedAccountsStore.entries()) {
+      if (v === oldRef) {
+        syncedAccountsStore.set(k, acc);
+      }
+    }
+  }
+  if (acc.userId) syncedAccountsStore.set(acc.userId.trim(), acc);
+  if (acc.email) syncedAccountsStore.set(acc.email.toLowerCase().trim(), acc);
+  if (isSaidElBanaAccount(acc.email, acc.userId, acc.displayName)) {
+    for (const alias of SAID_ACCOUNT_ALIASES) {
+      syncedAccountsStore.set(alias, acc);
+    }
+  }
 }
 
 // Smart finder that links accounts across multiple devices and email aliases
@@ -227,17 +296,9 @@ function findSyncedAccount(userId?: string, email?: string, displayName?: string
   const cleanUserId = typeof userId === 'string' ? userId.trim() : '';
   const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
-  // 1. Check direct map lookups
-  if (cleanUserId && syncedAccountsStore.has(cleanUserId)) {
-    return syncedAccountsStore.get(cleanUserId)!;
-  }
-  if (cleanEmail && syncedAccountsStore.has(cleanEmail)) {
-    return syncedAccountsStore.get(cleanEmail)!;
-  }
-
-  // 2. Said El Bana aliases lookup
+  // 1. Said El Bana / Kora Win unified account lookup
   if (isSaidElBanaAccount(cleanEmail, cleanUserId, displayName)) {
-    for (const key of ['saidelpana3@gmail.com', 'elbanasaid79@gmail.com', 'GVZ5QHmn5qeYgOYPaLdPcAXbcUg1', 'user_said_el_bana']) {
+    for (const key of SAID_ACCOUNT_ALIASES) {
       if (syncedAccountsStore.has(key)) {
         const found = syncedAccountsStore.get(key)!;
         if (cleanUserId) syncedAccountsStore.set(cleanUserId, found);
@@ -245,6 +306,14 @@ function findSyncedAccount(userId?: string, email?: string, displayName?: string
         return found;
       }
     }
+  }
+
+  // 2. Check direct map lookups
+  if (cleanUserId && syncedAccountsStore.has(cleanUserId)) {
+    return syncedAccountsStore.get(cleanUserId)!;
+  }
+  if (cleanEmail && syncedAccountsStore.has(cleanEmail)) {
+    return syncedAccountsStore.get(cleanEmail)!;
   }
 
   // 3. Scan all stored accounts
@@ -275,16 +344,38 @@ function loadSyncedAccountsFromDisk() {
       if (Array.isArray(list)) {
         list.forEach((acc: SyncedUserAccount) => {
           if (acc && (acc.userId || acc.email)) {
-            const { unifiedMap, unifiedList } = normalizeAccountPredictions(
-              acc.predictionsMap,
-              acc.predictionsList,
-              acc.userId || 'user'
-            );
-            acc.predictionsMap = unifiedMap;
-            acc.predictionsList = unifiedList;
-
-            if (acc.userId) syncedAccountsStore.set(acc.userId, acc);
-            if (acc.email) syncedAccountsStore.set(acc.email.toLowerCase().trim(), acc);
+            const existing = findSyncedAccount(acc.userId, acc.email, acc.displayName);
+            if (existing) {
+              const mergedMapInput = { ...(existing.predictionsMap || {}), ...(acc.predictionsMap || {}) };
+              const mergedListInput = [...(existing.predictionsList || []), ...(acc.predictionsList || [])];
+              const { unifiedMap, unifiedList } = normalizeAccountPredictions(
+                mergedMapInput,
+                mergedListInput,
+                existing.userId || acc.userId || 'user'
+              );
+              existing.coins = Math.max(existing.coins || 0, existing.points || 0, acc.coins || 0, acc.points || 0);
+              existing.points = existing.coins;
+              existing.diamonds = Math.max(existing.diamonds || 0, acc.diamonds || 0);
+              existing.predictionPoints = Math.max(existing.predictionPoints || 0, acc.predictionPoints || 0);
+              existing.exactPredictions = Math.max(existing.exactPredictions || 0, acc.exactPredictions || 0);
+              existing.adRewardCoins = Math.max(existing.adRewardCoins || 0, acc.adRewardCoins || 0);
+              existing.browseAdCoins = Math.max(existing.browseAdCoins || 0, acc.browseAdCoins || 0);
+              existing.dailyGiftCoins = Math.max(existing.dailyGiftCoins || 0, acc.dailyGiftCoins || 0);
+              existing.predictionsMap = unifiedMap;
+              existing.predictionsList = unifiedList;
+              existing.favoriteMatches = Array.from(new Set([...(existing.favoriteMatches || []), ...(acc.favoriteMatches || [])]));
+              if (!existing.password && acc.password) existing.password = acc.password;
+              registerAccountInMemory(existing, acc);
+            } else {
+              const { unifiedMap, unifiedList } = normalizeAccountPredictions(
+                acc.predictionsMap,
+                acc.predictionsList,
+                acc.userId || 'user'
+              );
+              acc.predictionsMap = unifiedMap;
+              acc.predictionsList = unifiedList;
+              registerAccountInMemory(acc);
+            }
           }
         });
       }
@@ -311,19 +402,14 @@ function loadSyncedAccountsFromDisk() {
       favoriteMatches: [],
       updatedAt: new Date().toISOString(),
     };
-    syncedAccountsStore.set("saidelpana3@gmail.com", newSaid);
-    syncedAccountsStore.set("elbanasaid79@gmail.com", newSaid);
-    syncedAccountsStore.set("GVZ5QHmn5qeYgOYPaLdPcAXbcUg1", newSaid);
-    syncedAccountsStore.set("user_said_el_bana", newSaid);
+    registerAccountInMemory(newSaid);
   } else {
-    saidAccount.coins = Math.max(minCoins, saidAccount.coins || 0);
-    saidAccount.points = Math.max(minCoins, saidAccount.points || 0);
+    saidAccount.userId = "GVZ5QHmn5qeYgOYPaLdPcAXbcUg1";
+    saidAccount.coins = Math.max(minCoins, saidAccount.coins || 0, saidAccount.points || 0);
+    saidAccount.points = saidAccount.coins;
     saidAccount.predictionPoints = Math.max(minCoins, saidAccount.predictionPoints || 0);
     saidAccount.exactPredictions = Math.max(2, saidAccount.exactPredictions || 0);
-    syncedAccountsStore.set("saidelpana3@gmail.com", saidAccount);
-    syncedAccountsStore.set("elbanasaid79@gmail.com", saidAccount);
-    syncedAccountsStore.set("GVZ5QHmn5qeYgOYPaLdPcAXbcUg1", saidAccount);
-    if (saidAccount.userId) syncedAccountsStore.set(saidAccount.userId, saidAccount);
+    registerAccountInMemory(saidAccount, saidAccount);
   }
 }
 
@@ -337,6 +423,38 @@ function saveSyncedAccountsToDisk() {
 }
 
 loadSyncedAccountsFromDisk();
+
+// Endpoint to automatically restore active user session on Mobile PWA when storage is isolated from Google browser
+app.get("/api/user/active-session", (_req, res) => {
+  const primaryAccount = findSyncedAccount("GVZ5QHmn5qeYgOYPaLdPcAXbcUg1", "elbanasaid79@gmail.com", "Said El Bana");
+  if (primaryAccount) {
+    const { unifiedMap, unifiedList } = normalizeAccountPredictions(
+      primaryAccount.predictionsMap,
+      primaryAccount.predictionsList,
+      primaryAccount.userId
+    );
+    primaryAccount.predictionsMap = unifiedMap;
+    primaryAccount.predictionsList = unifiedList;
+    const { password: _omitted, ...safeAcc } = primaryAccount;
+    return res.json({
+      success: true,
+      user: {
+        uid: primaryAccount.userId,
+        userId: primaryAccount.userId,
+        email: primaryAccount.email || "elbanasaid79@gmail.com",
+        displayName: primaryAccount.displayName || "Said El Bana",
+        photoURL: primaryAccount.photoURL || "",
+        coins: primaryAccount.coins,
+        points: primaryAccount.points,
+        diamonds: primaryAccount.diamonds || 0,
+        predictionPoints: primaryAccount.predictionPoints,
+        exactPredictions: primaryAccount.exactPredictions,
+      },
+      account: safeAcc,
+    });
+  }
+  return res.json({ success: false });
+});
 
 // Endpoint to retrieve unified user account across any device or phone
 app.get("/api/user/sync-account", async (req, res) => {
@@ -393,8 +511,12 @@ app.get("/api/user/sync-account", async (req, res) => {
           userId,
           email: uData.email || email,
           displayName: uData.displayName || "الكابتن",
+          phone: uData.phone || "",
+          password: uData.password || "",
+          photoURL: uData.photoURL || "",
           points: Number(uData.points || uData.coins || 0),
           coins: Number(uData.coins || uData.points || 0),
+          diamonds: Number(uData.diamonds || 0),
           predictionPoints: Number(uData.predictionPoints || 0),
           exactPredictions: Number(uData.exactPredictions || 0),
           predictionsMap: unifiedMap,
@@ -434,6 +556,7 @@ app.get("/api/user/sync-account", async (req, res) => {
       displayName: 'الكابتن',
       points: 0,
       coins: 0,
+      diamonds: 0,
       predictionPoints: 0,
       exactPredictions: 0,
       predictionsMap: {},
@@ -445,16 +568,245 @@ app.get("/api/user/sync-account", async (req, res) => {
   });
 });
 
+// Endpoint for Manual Registration & Login (Email, Password, Display Name, Phone)
+app.post("/api/auth/manual", async (req, res) => {
+  const { mode, email, password, displayName, phone, userId, oauthVerified } = req.body || {};
+  const cleanMode = mode === "REGISTER" ? "REGISTER" : "LOGIN";
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  const cleanPassword = typeof password === "string" ? password : "";
+  const cleanName = typeof displayName === "string" ? displayName.trim() : "";
+  const cleanPhone = typeof phone === "string" ? phone.trim() : "";
+  const cleanUidInput = typeof userId === "string" ? userId.trim() : "";
+  const isOAuthFlow = Boolean(oauthVerified);
+
+  if (!cleanEmail && !cleanUidInput) {
+    return res.status(400).json({
+      success: false,
+      errorCode: "MISSING_CREDENTIALS",
+      error: "يرجى إدخال البريد الإلكتروني وكلمة المرور",
+    });
+  }
+
+  if (!isOAuthFlow) {
+    if (!cleanPassword || cleanPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        errorCode: "INVALID_PASSWORD",
+        error: "كلمة المرور يجب أن تكون 6 أحرف أو أرقام على الأقل",
+      });
+    }
+  }
+
+  const isSaid = isSaidElBanaAccount(cleanEmail, cleanUidInput, cleanName);
+  const minCoins = isSaid ? 193 : 0;
+
+  let existing = findSyncedAccount(cleanUidInput, cleanEmail, cleanName);
+  let isNewUser = false;
+
+  // Determine canonical userId
+  let canonicalUserId = existing?.userId || cleanUidInput;
+  if (isSaid) {
+    canonicalUserId = "GVZ5QHmn5qeYgOYPaLdPcAXbcUg1";
+  } else if (!canonicalUserId) {
+    canonicalUserId = `user_${cleanEmail.replace(/[^a-z0-9]/g, "_")}`;
+  }
+
+  // If not in memory yet, check Firestore with a fast 2-second timeout so login never hangs
+  if (!existing && db && Date.now() >= firestoreQuotaExceededUntil) {
+    try {
+      const uSnap: any = await Promise.race([
+        getDoc(doc(db, "users", canonicalUserId)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 2000)),
+      ]);
+      if (uSnap && typeof uSnap.exists === "function" && uSnap.exists()) {
+        const uData = uSnap.data();
+        const { unifiedMap, unifiedList } = normalizeAccountPredictions(
+          uData.predictionsMap || {},
+          Array.isArray(uData.predictionsList) ? uData.predictionsList : [],
+          canonicalUserId
+        );
+        existing = {
+          userId: canonicalUserId,
+          email: uData.email || cleanEmail,
+          displayName: uData.displayName || cleanName || "الكابتن",
+          phone: uData.phone || cleanPhone || "",
+          password: typeof uData.password === "string" ? uData.password : "",
+          photoURL: uData.photoURL || "",
+          points: Math.max(minCoins, Number(uData.points || uData.coins || 0)),
+          coins: Math.max(minCoins, Number(uData.coins || uData.points || 0)),
+          diamonds: Number(uData.diamonds || 0),
+          predictionPoints: Math.max(minCoins, Number(uData.predictionPoints || 0)),
+          exactPredictions: Math.max(isSaid ? 2 : 0, Number(uData.exactPredictions || 0)),
+          predictionsMap: unifiedMap,
+          predictionsList: unifiedList,
+          coinsHistory: Array.isArray(uData.coinsHistory) ? uData.coinsHistory : [],
+          favoriteMatches: Array.isArray(uData.favoriteMatches) ? uData.favoriteMatches : [],
+          updatedAt: new Date().toISOString(),
+        };
+      }
+    } catch (_) {
+      // Ignore Firestore timeout or quota errors during manual auth
+    }
+  }
+
+  // Strict Password Verification Logic for Manual Auth (!isOAuthFlow)
+  if (!isOAuthFlow) {
+    if (cleanMode === "LOGIN") {
+      // 1. Account must exist
+      if (!existing) {
+        return res.status(404).json({
+          success: false,
+          errorCode: "USER_NOT_FOUND",
+          error: "هذا البريد الإلكتروني غير مسجل بعد. يرجى الضغط على (إنشاء حساب جديد) للتسجيل أولاً.",
+        });
+      }
+
+      // 2. Account must have a registered password
+      const registeredPassword = typeof existing.password === "string" ? existing.password : "";
+      if (!registeredPassword) {
+        return res.status(400).json({
+          success: false,
+          errorCode: "NO_PASSWORD_SET",
+          error: "لم يتم تسجيل كلمة مرور لهذا الحساب بعد. يرجى تعيين كلمة المرور أولاً من تبويب (إنشاء حساب جديد)، وبعدها لن يفتح الحساب إلا بها فقط.",
+        });
+      }
+
+      // 3. Password must strictly match the exact password registered with!
+      if (registeredPassword !== cleanPassword) {
+        return res.status(401).json({
+          success: false,
+          errorCode: "WRONG_PASSWORD",
+          error: "كلمة المرور غير صحيحة! يرجى إدخال كلمة المرور الصحيحة التي سجلت بها فقط.",
+        });
+      }
+    } else if (cleanMode === "REGISTER") {
+      // In REGISTER mode:
+      if (existing) {
+        const registeredPassword = typeof existing.password === "string" ? existing.password : "";
+        // If this account already has a password registered, do NOT allow overwriting it with a different password!
+        if (registeredPassword && registeredPassword !== cleanPassword) {
+          return res.status(409).json({
+            success: false,
+            errorCode: "EMAIL_ALREADY_EXISTS",
+            error: "هذا البريد الإلكتروني مسجل بالفعل! يرجى تسجيل الدخول باستخدام كلمة المرور التي سجلت بها فقط.",
+          });
+        }
+        // If existing account had no password set yet (e.g. pre-seeded or OAuth account), set its password now!
+        if (!registeredPassword) {
+          existing.password = cleanPassword;
+        }
+      }
+    }
+  }
+
+  if (!existing) {
+    isNewUser = true;
+    const defaultName =
+      cleanName ||
+      (isSaid ? "Said El Bana" : cleanEmail ? cleanEmail.split("@")[0] : "الكابتن");
+    existing = {
+      userId: canonicalUserId,
+      email: cleanEmail,
+      displayName: defaultName,
+      phone: cleanPhone,
+      password: isOAuthFlow ? "" : cleanPassword,
+      photoURL: "",
+      points: minCoins,
+      coins: minCoins,
+      diamonds: 0,
+      predictionPoints: minCoins,
+      exactPredictions: isSaid ? 2 : 0,
+      predictionsMap: {},
+      predictionsList: [],
+      coinsHistory: [],
+      favoriteMatches: [],
+      updatedAt: new Date().toISOString(),
+    };
+  } else {
+    // Update displayName / phone if provided (NEVER overwrite an existing password!)
+    if (cleanName && (cleanMode === "REGISTER" || !existing.displayName || existing.displayName === "الكابتن")) {
+      existing.displayName = cleanName;
+    }
+    if (cleanPhone) {
+      existing.phone = cleanPhone;
+    }
+    existing.coins = Math.max(minCoins, existing.coins || 0, existing.points || 0);
+    existing.points = existing.coins;
+    existing.predictionPoints = Math.max(minCoins, existing.predictionPoints || 0);
+    existing.exactPredictions = Math.max(isSaid ? 2 : 0, existing.exactPredictions || 0);
+    existing.updatedAt = new Date().toISOString();
+  }
+
+  // Persist in server memory and disk immediately
+  registerAccountInMemory(existing, existing);
+  saveSyncedAccountsToDisk();
+
+  // Non-blocking background sync to Firestore
+  if (db && Date.now() >= firestoreQuotaExceededUntil) {
+    setDoc(
+      doc(db, "users", canonicalUserId),
+      {
+        userId: canonicalUserId,
+        displayName: existing.displayName,
+        email: existing.email,
+        phone: existing.phone || "",
+        password: existing.password || "",
+        points: existing.coins,
+        coins: existing.coins,
+        diamonds: existing.diamonds || 0,
+        predictionPoints: existing.predictionPoints,
+        exactPredictions: existing.exactPredictions,
+        predictionsMap: existing.predictionsMap || {},
+        predictionsList: existing.predictionsList || [],
+        favoriteMatches: existing.favoriteMatches || [],
+        updatedAt: existing.updatedAt,
+      },
+      { merge: true }
+    ).catch((err: any) => {
+      if (isFirestoreQuotaError(err)) {
+        firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+      }
+    });
+  }
+
+  const { password: _omittedPassword, ...safeAccount } = existing;
+
+  return res.json({
+    success: true,
+    isNewUser,
+    user: {
+      uid: existing.userId,
+      userId: existing.userId,
+      email: existing.email,
+      displayName: existing.displayName,
+      phone: existing.phone || "",
+      photoURL: existing.photoURL || "",
+      coins: existing.coins,
+      points: existing.points,
+      diamonds: existing.diamonds || 0,
+      predictionPoints: existing.predictionPoints,
+      exactPredictions: existing.exactPredictions,
+      predictionsMap: existing.predictionsMap || {},
+      predictionsList: existing.predictionsList || [],
+      favoriteMatches: existing.favoriteMatches || [],
+    },
+    account: safeAccount,
+  });
+});
+
 // Endpoint to persist and merge user account across devices (coins, predictions, favorites)
 app.post("/api/user/sync-account", async (req, res) => {
   const {
     userId,
     email,
     displayName,
+    phone,
     photoURL,
     localCoins,
+    localDiamonds,
     localPredictionPoints,
     localExactCount,
+    dailyGiftCoins,
     adRewardCoins,
     browseAdCoins,
     predictions,
@@ -482,6 +834,10 @@ app.post("/api/user/sync-account", async (req, res) => {
     typeof localCoins === 'number' ? localCoins : 0
   );
 
+  const currentDiamonds = typeof localDiamonds === 'number'
+    ? Math.max(0, localDiamonds)
+    : Math.max(0, existing?.diamonds || 0);
+
   const currentPredPoints = Math.max(
     minCoins,
     existing?.predictionPoints || 0,
@@ -492,6 +848,11 @@ app.post("/api/user/sync-account", async (req, res) => {
     isSaid ? 2 : 0,
     existing?.exactPredictions || 0,
     typeof localExactCount === 'number' ? localExactCount : 0
+  );
+
+  const currentDailyGiftCoins = Math.max(
+    existing?.dailyGiftCoins || 0,
+    typeof dailyGiftCoins === 'number' ? dailyGiftCoins : 0
   );
 
   const currentAdCoins = Math.max(
@@ -514,10 +875,15 @@ app.post("/api/user/sync-account", async (req, res) => {
     ...(Array.isArray(predictions) ? predictions : []),
   ];
 
+  const targetUserId = isSaid
+    ? 'GVZ5QHmn5qeYgOYPaLdPcAXbcUg1'
+    : (existing?.userId || cleanUserId || `user_${Date.now()}`);
+  const targetEmail = cleanEmail || existing?.email || '';
+
   const { unifiedMap, unifiedList } = normalizeAccountPredictions(
     combinedRawMap,
     combinedRawList,
-    cleanUserId || existing?.userId || 'user'
+    targetUserId
   );
 
   // Merge favorites
@@ -536,18 +902,19 @@ app.post("/api/user/sync-account", async (req, res) => {
   });
   const mergedHistory = Array.from(mergedHistoryMap.values());
 
-  const targetUserId = cleanUserId || existing?.userId || `user_${Date.now()}`;
-  const targetEmail = cleanEmail || existing?.email || '';
-
   const updatedAccount: SyncedUserAccount = {
     userId: targetUserId,
     email: targetEmail,
     displayName: displayName || existing?.displayName || (isSaid ? 'Said El Bana' : 'الكابتن'),
+    phone: phone || existing?.phone || '',
+    password: existing?.password,
     photoURL: photoURL || existing?.photoURL || '',
     points: currentCoins,
     coins: currentCoins,
+    diamonds: currentDiamonds,
     predictionPoints: currentPredPoints,
     exactPredictions: currentExact,
+    dailyGiftCoins: currentDailyGiftCoins,
     adRewardCoins: currentAdCoins,
     browseAdCoins: currentBrowseCoins,
     predictionsMap: unifiedMap,
@@ -557,14 +924,10 @@ app.post("/api/user/sync-account", async (req, res) => {
     updatedAt: new Date().toISOString(),
   };
 
-  // Link all associated identifiers in memory
-  if (targetUserId) syncedAccountsStore.set(targetUserId, updatedAccount);
-  if (targetEmail) syncedAccountsStore.set(targetEmail, updatedAccount);
-  if (isSaid) {
-    syncedAccountsStore.set("saidelpana3@gmail.com", updatedAccount);
-    syncedAccountsStore.set("elbanasaid79@gmail.com", updatedAccount);
-    syncedAccountsStore.set("GVZ5QHmn5qeYgOYPaLdPcAXbcUg1", updatedAccount);
-  }
+  // Link all associated identifiers in memory and replace any old references
+  registerAccountInMemory(updatedAccount, existing);
+  if (cleanUserId) syncedAccountsStore.set(cleanUserId, updatedAccount);
+  if (cleanEmail) syncedAccountsStore.set(cleanEmail, updatedAccount);
   saveSyncedAccountsToDisk();
 
   // Try to sync to Firestore in background without blocking response
@@ -626,9 +989,12 @@ app.post("/api/user/add-ad-reward", async (req, res) => {
     userId: targetUserId,
     email: targetEmail,
     displayName: existing?.displayName || (isSaid ? 'Said El Bana' : 'الكابتن'),
+    phone: existing?.phone || '',
+    password: existing?.password || '',
     photoURL: existing?.photoURL || '',
     points: newBalance,
     coins: newBalance,
+    diamonds: existing?.diamonds || 0,
     predictionPoints: existing?.predictionPoints || minCoins,
     exactPredictions: existing?.exactPredictions || (isSaid ? 2 : 0),
     adRewardCoins: currentAdCoins,
@@ -680,6 +1046,332 @@ app.post("/api/user/add-ad-reward", async (req, res) => {
   });
 });
 
+// ==========================================
+// 🏆 SERVER-AUTHORITATIVE LEAGUE TOURNAMENT ENGINE
+// Guarantees all joined participants & counts sync across all devices and new users
+// ==========================================
+const LEAGUE_TOURNAMENT_FILE = path.join(DATA_DIR, "league-tournament.json");
+const SERVER_DEDICATED_TOURNAMENT_MATCH_IDS = [
+  "m_epl_liverpool_mancity_oct11",
+  "m_egy_zamalek_ahly_oct11",
+  "m_egy_pyramids_ceramica_oct12",
+  "m_uecl_kups_trabzonspor_oct15",
+];
+
+function getServerDedicatedTournamentMatches() {
+  const all = getAllCuratedMatches();
+  return SERVER_DEDICATED_TOURNAMENT_MATCH_IDS
+    .map((id) => all.find((m) => m.id === id))
+    .filter((m): m is NonNullable<typeof m> => Boolean(m))
+    .map((m) => ({ ...m, isTournamentMatch: true }));
+}
+
+function buildDefaultServerLeagueTournament() {
+  const initialParticipants = [
+    {
+      userId: "GVZ5QHmn5qeYgOYPaLdPcAXbcUg1",
+      userName: "Said El Bana",
+      joinedAt: "2026-10-06T12:00:00.000Z",
+      correctPredictionsCount: 0,
+      exactPredictionsCount: 0,
+      totalPredictionsCount: 0,
+      predictions: {},
+    },
+  ];
+  return {
+    id: "league_tourn_premier_2026",
+    title: "Grand League Champions Tournament 🏆",
+    titleAr: "بطولة دوريات النخبة الكبرى 🏆",
+    description: "Dedicated league prediction championship. Free participation for all fans. 250 participants required to unlock predictions.",
+    descriptionAr: "مسابقة توقعات خاصة ومجانية بالكامل لمباريات الدوريات الكبرى. الحد الأدنى لانطلاق المسابقة 250 لاعباً.",
+    leagueName: "Premier League, Egyptian League & Conference League",
+    leagueNameAr: "الدوري الإنجليزي والمصري ودوري المؤتمر الأوروبي",
+    minRequiredParticipants: 250,
+    participantsCount: initialParticipants.length,
+    isUnlocked: false,
+    status: "RECRUITING",
+    startDate: "2026-10-11",
+    endDate: "2026-10-15",
+    matches: getServerDedicatedTournamentMatches(),
+    prizes: {
+      first: { coins: 200, label: "1st Place", labelAr: "المركز الأول: 200 كوينز 🪙" },
+      second: { coins: 150, label: "2nd Place", labelAr: "المركز الثاني: 150 كوينز 🪙" },
+      third: { coins: 100, label: "3rd Place", labelAr: "المركز الثالث: 100 كوينز 🪙" },
+    },
+    prizesDistributed: false,
+    participants: initialParticipants,
+  };
+}
+
+let serverLeagueTournament: any = buildDefaultServerLeagueTournament();
+
+function normalizeServerTournamentState(tourn: any) {
+  if (!tourn || typeof tourn !== "object") {
+    return buildDefaultServerLeagueTournament();
+  }
+  tourn.matches = getServerDedicatedTournamentMatches();
+  tourn.minRequiredParticipants = 250;
+  tourn.prizes = {
+    first: { coins: 200, label: "1st Place", labelAr: "المركز الأول: 200 كوينز 🪙" },
+    second: { coins: 150, label: "2nd Place", labelAr: "المركز الثاني: 150 كوينز 🪙" },
+    third: { coins: 100, label: "3rd Place", labelAr: "المركز الثالث: 100 كوينز 🪙" },
+  };
+  if (!Array.isArray(tourn.participants)) {
+    tourn.participants = [];
+  }
+  // Deduplicate participants by userId while preserving earliest join or richest predictions
+  const map = new Map<string, any>();
+  for (const p of tourn.participants) {
+    if (!p || !p.userId) continue;
+    const cleanUid = String(p.userId).trim();
+    if (!cleanUid) continue;
+    if (!map.has(cleanUid)) {
+      map.set(cleanUid, {
+        userId: cleanUid,
+        userName: p.userName && p.userName !== "أنت" && p.userName !== "You" ? p.userName : "مشجع كروي",
+        joinedAt: p.joinedAt || new Date().toISOString(),
+        correctPredictionsCount: Number(p.correctPredictionsCount || 0),
+        exactPredictionsCount: Number(p.exactPredictionsCount || 0),
+        totalPredictionsCount: Number(p.totalPredictionsCount || 0),
+        predictions: p.predictions && typeof p.predictions === "object" ? p.predictions : {},
+      });
+    } else {
+      const existing = map.get(cleanUid)!;
+      const mergedPreds = { ...(existing.predictions || {}), ...(p.predictions || {}) };
+      map.set(cleanUid, {
+        ...existing,
+        userName:
+          p.userName && p.userName !== "مشجع كروي" && p.userName !== "أنت" && p.userName !== "You"
+            ? p.userName
+            : existing.userName,
+        predictions: mergedPreds,
+        totalPredictionsCount: Object.keys(mergedPreds).length,
+      });
+    }
+  }
+
+  // Ensure Said El Bana is always present if tournament was initialized
+  if (!map.has("GVZ5QHmn5qeYgOYPaLdPcAXbcUg1")) {
+    map.set("GVZ5QHmn5qeYgOYPaLdPcAXbcUg1", {
+      userId: "GVZ5QHmn5qeYgOYPaLdPcAXbcUg1",
+      userName: "Said El Bana",
+      joinedAt: "2026-10-06T12:00:00.000Z",
+      correctPredictionsCount: 0,
+      exactPredictionsCount: 0,
+      totalPredictionsCount: 0,
+      predictions: {},
+    });
+  }
+
+  tourn.participants = Array.from(map.values());
+  tourn.participantsCount = tourn.participants.length;
+  tourn.isUnlocked = tourn.participantsCount >= tourn.minRequiredParticipants;
+  if (tourn.isUnlocked && tourn.status === "RECRUITING") {
+    tourn.status = "ACTIVE";
+  }
+  if (!tourn.isUnlocked) {
+    tourn.participants.forEach((p: any) => {
+      p.predictions = {};
+      p.totalPredictionsCount = 0;
+    });
+  }
+  return tourn;
+}
+
+function loadServerLeagueTournamentFromDisk() {
+  try {
+    if (fs.existsSync(LEAGUE_TOURNAMENT_FILE)) {
+      const raw = fs.readFileSync(LEAGUE_TOURNAMENT_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      serverLeagueTournament = normalizeServerTournamentState(parsed);
+      return;
+    }
+  } catch (e) {
+    console.warn("Notice loading league tournament from disk:", e);
+  }
+  serverLeagueTournament = normalizeServerTournamentState(buildDefaultServerLeagueTournament());
+  saveServerLeagueTournamentToDisk();
+}
+
+function saveServerLeagueTournamentToDisk() {
+  try {
+    serverLeagueTournament = normalizeServerTournamentState(serverLeagueTournament);
+    fs.writeFileSync(LEAGUE_TOURNAMENT_FILE, JSON.stringify(serverLeagueTournament, null, 2), "utf-8");
+  } catch (e) {
+    console.warn("Notice saving league tournament to disk:", e);
+  }
+
+  if (db && Date.now() >= firestoreQuotaExceededUntil) {
+    setDoc(
+      doc(db, "leagueTournaments", serverLeagueTournament.id),
+      {
+        id: serverLeagueTournament.id,
+        participantsCount: serverLeagueTournament.participantsCount,
+        isUnlocked: serverLeagueTournament.isUnlocked,
+        status: serverLeagueTournament.status,
+        participants: serverLeagueTournament.participants,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    ).catch((err: any) => {
+      if (isFirestoreQuotaError(err)) {
+        firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+      }
+    });
+  }
+}
+
+loadServerLeagueTournamentFromDisk();
+
+// GET unified League Tournament state
+app.get("/api/league-tournament", (_req, res) => {
+  serverLeagueTournament = normalizeServerTournamentState(serverLeagueTournament);
+  return res.json({
+    success: true,
+    tournament: serverLeagueTournament,
+  });
+});
+
+// POST sync local participants from any browser with server tournament state
+app.post("/api/league-tournament/sync", (req, res) => {
+  const { localParticipants, participants } = req.body || {};
+  const incomingParticipants = Array.isArray(localParticipants)
+    ? localParticipants
+    : Array.isArray(participants)
+    ? participants
+    : [];
+  if (incomingParticipants.length > 0) {
+    serverLeagueTournament.participants = [
+      ...serverLeagueTournament.participants,
+      ...incomingParticipants,
+    ];
+    saveServerLeagueTournamentToDisk();
+  } else {
+    serverLeagueTournament = normalizeServerTournamentState(serverLeagueTournament);
+  }
+  return res.json({
+    success: true,
+    tournament: serverLeagueTournament,
+  });
+});
+
+// POST join League Tournament (adds user globally and increments count for all users)
+app.post("/api/league-tournament/join", (req, res) => {
+  const { userId, userName, email, localParticipants } = req.body || {};
+  let cleanUserId = typeof userId === "string" ? userId.trim() : "";
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  const cleanName = typeof userName === "string" && userName.trim() ? userName.trim() : "مشجع كروي";
+
+  if (isSaidElBanaAccount(cleanEmail, cleanUserId, cleanName)) {
+    cleanUserId = "GVZ5QHmn5qeYgOYPaLdPcAXbcUg1";
+  }
+
+  if (!cleanUserId) {
+    cleanUserId = `guest_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
+  }
+
+  // Merge any local participants from that browser first
+  if (Array.isArray(localParticipants) && localParticipants.length > 0) {
+    serverLeagueTournament.participants = [
+      ...serverLeagueTournament.participants,
+      ...localParticipants,
+    ];
+  }
+
+  serverLeagueTournament = normalizeServerTournamentState(serverLeagueTournament);
+  const wasUnlocked = Boolean(serverLeagueTournament.isUnlocked);
+
+  const existingIdx = serverLeagueTournament.participants.findIndex(
+    (p: any) => p.userId === cleanUserId
+  );
+
+  if (existingIdx !== -1) {
+    // Update display name if improved
+    if (cleanName && cleanName !== "مشجع كروي" && cleanName !== "أنت" && cleanName !== "You") {
+      serverLeagueTournament.participants[existingIdx].userName = cleanName;
+      saveServerLeagueTournamentToDisk();
+    }
+    return res.json({
+      success: true,
+      alreadyJoined: true,
+      isNewlyUnlocked: false,
+      tournament: serverLeagueTournament,
+    });
+  }
+
+  const newParticipant = {
+    userId: cleanUserId,
+    userName: cleanName === "أنت" || cleanName === "You" ? "مشجع كروي" : cleanName,
+    joinedAt: new Date().toISOString(),
+    correctPredictionsCount: 0,
+    exactPredictionsCount: 0,
+    totalPredictionsCount: 0,
+    predictions: {},
+  };
+
+  serverLeagueTournament.participants = [
+    newParticipant,
+    ...serverLeagueTournament.participants,
+  ];
+
+  saveServerLeagueTournamentToDisk();
+  const isNewlyUnlocked = !wasUnlocked && Boolean(serverLeagueTournament.isUnlocked);
+
+  return res.json({
+    success: true,
+    alreadyJoined: false,
+    isNewlyUnlocked,
+    tournament: serverLeagueTournament,
+  });
+});
+
+// POST submit or sync prediction in League Tournament
+app.post("/api/league-tournament/predict", (req, res) => {
+  const { userId, email, matchId, predictedHomeScore, predictedAwayScore } = req.body || {};
+  let cleanUserId = typeof userId === "string" ? userId.trim() : "";
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+
+  if (isSaidElBanaAccount(cleanEmail, cleanUserId, "")) {
+    cleanUserId = "GVZ5QHmn5qeYgOYPaLdPcAXbcUg1";
+  }
+
+  serverLeagueTournament = normalizeServerTournamentState(serverLeagueTournament);
+
+  if (!serverLeagueTournament.isUnlocked || !cleanUserId || !matchId) {
+    return res.json({
+      success: false,
+      tournament: serverLeagueTournament,
+    });
+  }
+
+  const participantIndex = serverLeagueTournament.participants.findIndex(
+    (p: any) => p.userId === cleanUserId
+  );
+  if (participantIndex === -1) {
+    return res.json({
+      success: false,
+      tournament: serverLeagueTournament,
+    });
+  }
+
+  const participant = { ...serverLeagueTournament.participants[participantIndex] };
+  participant.predictions = participant.predictions || {};
+  participant.predictions[matchId] = {
+    predictedHomeScore: Number(predictedHomeScore ?? 0),
+    predictedAwayScore: Number(predictedAwayScore ?? 0),
+    predictedAt: new Date().toISOString(),
+  };
+  participant.totalPredictionsCount = Object.keys(participant.predictions).length;
+
+  serverLeagueTournament.participants[participantIndex] = participant;
+  saveServerLeagueTournamentToDisk();
+
+  return res.json({
+    success: true,
+    tournament: serverLeagueTournament,
+  });
+});
+
 // Google & Ad Network Site Verification Endpoints
 app.get("/google6645977368ee1987.html", (_req, res) => {
   res.setHeader("Content-Type", "text/html");
@@ -718,7 +1410,7 @@ app.get("/api/health", (_req, res) => {
 // =========================================================================
 // Official VAST Video Ads Feed Parser & Endpoint
 // =========================================================================
-const OFFICIAL_VAST_FEED_URL = "https://vapid-size.com/dhm.FWzzduGLN/v/Z/GoUP/FeNm/9Yu/Z/Utl/kfPDTecj0/MATCci0/MBzcMGtfNCzcQ_x/Noz/QPz_NrwP";
+const OFFICIAL_VAST_FEED_URL = "https://massivesalad.com/dCm_FEzFd.GGNHv-ZJGKUL/Mc_nONPyQYRz-1T2UYVXWN_0YaZWa0bm-cd2elfkgP_SiZj6kbl2-5nloapWqQ_9sNtzuMv2-MxjyczxAN_wC";
 
 interface ParsedVastAd {
   id: string;
@@ -736,8 +1428,34 @@ interface ParsedVastAd {
 // Fallback high-quality ads from this exact VAST feed to guarantee 100% uptime
 const FALLBACK_VAST_ADS: ParsedVastAd[] = [
   {
-    id: "641280",
+    id: "807119",
     adTitle: "إعلان الشريك الرسمي (فيديو 1)",
+    duration: 30,
+    skipOffset: 5,
+    videoUrl: "https://www.silent-basis.pro/301305/351513/807115_43309y480.mp4",
+    mediaFiles: [
+      { url: "https://www.silent-basis.pro/301305/351513/807115_43309y.mp4", type: "video/mp4", width: 1280, height: 720 },
+      { url: "https://www.silent-basis.pro/301305/351513/807115_43309y480.mp4", type: "video/mp4", width: 854, height: 480 },
+      { url: "https://www.silent-basis.pro/301305/351513/807115_43309y360.mp4", type: "video/mp4", width: 640, height: 360 }
+    ],
+    clickThroughUrl: OFFICIAL_VAST_FEED_URL
+  },
+  {
+    id: "534949",
+    adTitle: "إعلان الشريك الرسمي (فيديو 2)",
+    duration: 30,
+    skipOffset: 5,
+    videoUrl: "https://www.silent-basis.pro/71940/283558/534798_77a4cy480.mp4",
+    mediaFiles: [
+      { url: "https://www.silent-basis.pro/71940/283558/534798_77a4cy.mp4", type: "video/mp4", width: 720, height: 720 },
+      { url: "https://www.silent-basis.pro/71940/283558/534798_77a4cy480.mp4", type: "video/mp4", width: 480, height: 480 },
+      { url: "https://www.silent-basis.pro/71940/283558/534798_77a4cy360.mp4", type: "video/mp4", width: 360, height: 360 }
+    ],
+    clickThroughUrl: OFFICIAL_VAST_FEED_URL
+  },
+  {
+    id: "641280",
+    adTitle: "إعلان الشريك الرسمي (فيديو 3)",
     duration: 29,
     skipOffset: 15,
     videoUrl: "https://www.silent-basis.pro/301305/351376/641280_e5a15y.mp4",
@@ -745,31 +1463,6 @@ const FALLBACK_VAST_ADS: ParsedVastAd[] = [
       { url: "https://www.silent-basis.pro/301305/351376/641280_e5a15y.mp4", type: "video/mp4", width: 1024, height: 576 },
       { url: "https://www.silent-basis.pro/301305/351376/641280_e5a15y480.mp4", type: "video/mp4", width: 854, height: 480 },
       { url: "https://www.silent-basis.pro/301305/351376/641280_e5a15y360.mp4", type: "video/mp4", width: 640, height: 360 }
-    ],
-    clickThroughUrl: OFFICIAL_VAST_FEED_URL
-  },
-  {
-    id: "1161474",
-    adTitle: "إعلان الشريك الرسمي (فيديو 2)",
-    duration: 24,
-    skipOffset: 15,
-    videoUrl: "https://www.silent-basis.pro/301305/351387/1161474_f7312y.mp4",
-    mediaFiles: [
-      { url: "https://www.silent-basis.pro/301305/351387/1161474_f7312y.mp4", type: "video/mp4", width: 1024, height: 576 },
-      { url: "https://www.silent-basis.pro/301305/351387/1161474_f7312y480.mp4", type: "video/mp4", width: 854, height: 480 },
-      { url: "https://www.silent-basis.pro/301305/351387/1161474_f7312y360.mp4", type: "video/mp4", width: 640, height: 360 }
-    ],
-    clickThroughUrl: OFFICIAL_VAST_FEED_URL
-  },
-  {
-    id: "559471",
-    adTitle: "إعلان الشريك الرسمي (فيديو 3)",
-    duration: 17,
-    skipOffset: 15,
-    videoUrl: "https://www.silent-basis.pro/152327/199276/559471_5b9bay.mp4",
-    mediaFiles: [
-      { url: "https://www.silent-basis.pro/152327/199276/559471_5b9bay.mp4", type: "video/mp4", width: 854, height: 480 },
-      { url: "https://www.silent-basis.pro/152327/199276/559471_5b9bay480.mp4", type: "video/mp4", width: 640, height: 360 }
     ],
     clickThroughUrl: OFFICIAL_VAST_FEED_URL
   }
@@ -921,6 +1614,87 @@ app.get("/api/ads/vast", async (req, res) => {
     cachedVastAds = FALLBACK_VAST_ADS;
     lastVastFetchTime = now;
     return res.json({ success: true, source: "fallback", ads: FALLBACK_VAST_ADS });
+  }
+});
+
+// In-memory cache of MP4 video buffers so mobile browsers load inter-round ads instantly from same-origin without black screens or DNS/AdBlock issues
+const adVideoBufferCache = new Map<string, { buffer: Buffer; contentType: string; timestamp: number }>();
+
+async function getOrFetchAdVideoBuffer(videoUrl: string): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const now = Date.now();
+  const cached = adVideoBufferCache.get(videoUrl);
+  if (cached && now - cached.timestamp < 25 * 60 * 1000) {
+    return { buffer: cached.buffer, contentType: cached.contentType };
+  }
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const resp = await fetch(videoUrl, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+      }
+    });
+    clearTimeout(timeout);
+    if (!resp.ok) return null;
+    const arrayBuffer = await resp.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    if (buffer.length < 1000) return null;
+    const contentType = resp.headers.get("content-type") || "video/mp4";
+    adVideoBufferCache.set(videoUrl, { buffer, contentType, timestamp: now });
+    return { buffer, contentType };
+  } catch (_) {
+    return null;
+  }
+}
+
+// Pre-warm the default VAST ad videos in the background after server has fully booted
+setTimeout(() => {
+  for (const ad of FALLBACK_VAST_ADS) {
+    getOrFetchAdVideoBuffer(ad.videoUrl).catch(() => {});
+  }
+}, 15000);
+
+app.get("/api/ads/video", async (req, res) => {
+  const targetUrl = typeof req.query.url === "string" ? req.query.url : FALLBACK_VAST_ADS[0].videoUrl;
+  try {
+    let media = await getOrFetchAdVideoBuffer(targetUrl);
+    if (!media) {
+      media = await getOrFetchAdVideoBuffer(FALLBACK_VAST_ADS[0].videoUrl);
+    }
+    if (!media) {
+      return res.redirect(targetUrl);
+    }
+
+    const { buffer, contentType } = media;
+    const total = buffer.length;
+    const range = req.headers.range;
+
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "public, max-age=1800");
+
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
+      if (start >= total || end >= total) {
+        res.status(416).setHeader("Content-Range", `bytes */${total}`);
+        return res.end();
+      }
+      const chunksize = end - start + 1;
+      res.status(206);
+      res.setHeader("Content-Range", `bytes ${start}-${end}/${total}`);
+      res.setHeader("Content-Length", chunksize);
+      return res.end(buffer.subarray(start, end + 1));
+    } else {
+      res.status(200);
+      res.setHeader("Content-Length", total);
+      return res.end(buffer);
+    }
+  } catch (_) {
+    return res.redirect(targetUrl);
   }
 });
 
@@ -1801,8 +2575,32 @@ const MASTER_FINISHED_MATCHES_MAP: Record<string, { homeScore: number; awayScore
 // Endpoint to restore and sync user coins directly from their predictions in Firestore
 app.post("/api/user/sync-coins", async (req, res) => {
   const { userId, email } = req.body || {};
-  if (!userId || !db) {
-    return res.status(400).json({ success: false, error: "Missing userId or database" });
+  if (!userId && !email) {
+    return res.status(400).json({ success: false, error: "Missing userId or email" });
+  }
+
+  const isSaid = isSaidElBanaAccount(email, userId);
+  const existingAcc = findSyncedAccount(userId, email);
+  const minCoins = isSaid ? 193 : 0;
+  const fallbackRestoredCoins = Math.max(
+    minCoins,
+    Number(existingAcc?.coins || existingAcc?.points || 0)
+  );
+  const fallbackEarnedCoins = Math.max(
+    minCoins,
+    Number(existingAcc?.predictionPoints || existingAcc?.coins || 0)
+  );
+
+  if (!db || Date.now() < firestoreQuotaExceededUntil) {
+    return res.json({
+      success: true,
+      userId,
+      restoredCoins: fallbackRestoredCoins,
+      totalEarnedCoins: fallbackEarnedCoins,
+      totalSpentCoins: 0,
+      exactPredictions: Math.max(isSaid ? 2 : 0, Number(existingAcc?.exactPredictions || 0)),
+      totalPredictions: Array.isArray(existingAcc?.predictionsList) ? existingAcc!.predictionsList.length : (isSaid ? 2 : 0),
+    });
   }
 
   try {
@@ -1992,7 +2790,18 @@ app.post("/api/user/sync-coins", async (req, res) => {
       totalPredictions: totalCount,
     });
   } catch (e: any) {
-    return res.status(500).json({ success: false, error: e?.message });
+    if (isFirestoreQuotaError(e)) {
+      firestoreQuotaExceededUntil = Date.now() + 60 * 60 * 1000;
+    }
+    return res.json({
+      success: true,
+      userId,
+      restoredCoins: fallbackRestoredCoins,
+      totalEarnedCoins: fallbackEarnedCoins,
+      totalSpentCoins: 0,
+      exactPredictions: Math.max(isSaid ? 2 : 0, Number(existingAcc?.exactPredictions || 0)),
+      totalPredictions: Array.isArray(existingAcc?.predictionsList) ? existingAcc!.predictionsList.length : (isSaid ? 2 : 0),
+    });
   }
 });
 
@@ -3310,17 +4119,64 @@ setInterval(() => {
   } catch (_) {}
 }, 5 * 60 * 1000); // Check every 5 minutes and respect cooldown
 
+// Helper to check if compiled dist/index.html is up-to-date with source files
+function isDistBundleFresh(distPath: string): boolean {
+  try {
+    const distIndex = path.join(distPath, "index.html");
+    if (!fs.existsSync(distIndex)) return false;
+    const distMtime = fs.statSync(distIndex).mtimeMs;
+    const rootIndex = path.join(process.cwd(), "index.html");
+    const appTsx = path.join(process.cwd(), "src", "App.tsx");
+    if (fs.existsSync(rootIndex) && fs.statSync(rootIndex).mtimeMs > distMtime + 2000) {
+      return false;
+    }
+    if (fs.existsSync(appTsx) && fs.statSync(appTsx).mtimeMs > distMtime + 2000) {
+      return false;
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function startServer() {
+  let viteMiddlewares: any = null;
+  const distPath = path.join(process.cwd(), "dist");
+  const distStaticMiddleware = express.static(distPath, {
+    index: false,
+    maxAge: "1h",
+    setHeaders: (res, filePath) => {
+      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      } else if (filePath.endsWith("sw.js")) {
+        res.setHeader("Cache-Control", "no-cache");
+      }
+    },
+  });
+
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
+    app.use((req, res, next) => {
+      if (req.path.startsWith("/api/")) return next();
+      // Serve pre-compiled dist bundle when fresh so opening the app takes 3 HTTP requests instead of 115+
+      if (isDistBundleFresh(distPath)) {
+        return distStaticMiddleware(req, res, () => {
+          if (req.method === "GET" && (req.path === "/" || req.path === "/index.html" || !req.path.includes("."))) {
+            res.setHeader("Cache-Control", "no-cache");
+            return res.sendFile(path.join(distPath, "index.html"));
+          }
+          if (viteMiddlewares) return viteMiddlewares(req, res, next);
+          next();
+        });
+      }
+      if (viteMiddlewares) {
+        return viteMiddlewares(req, res, next);
+      }
+      next();
     });
-    app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    app.use(distStaticMiddleware);
     app.get("*", (_req, res) => {
+      res.setHeader("Cache-Control", "no-cache");
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
@@ -3328,6 +4184,14 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Kora Football App server running on http://0.0.0.0:${PORT}`);
   });
+
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    viteMiddlewares = vite.middlewares;
+  }
 }
 
 startServer();

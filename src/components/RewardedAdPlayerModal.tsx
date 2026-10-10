@@ -157,6 +157,12 @@ export const RewardedAdPlayerModal: React.FC<RewardedAdPlayerModalProps> = ({
     };
 
     const handleError = () => {
+      if (video.src.includes('/api/ads/video')) {
+        video.src = currentAd.videoUrl;
+        video.load();
+        video.play().catch(() => {});
+        return;
+      }
       // If primary video failed, try fallback media file if available
       if (currentAd.mediaFiles && currentAd.mediaFiles.length > 1) {
         const nextMedia = currentAd.mediaFiles.find((m) => m.url !== currentAd.videoUrl);
@@ -371,7 +377,7 @@ export const RewardedAdPlayerModal: React.FC<RewardedAdPlayerModalProps> = ({
           {/* Native HTML5 Video Element */}
           <video
             ref={videoRef}
-            src={currentAd.videoUrl}
+            src={`/api/ads/video?url=${encodeURIComponent(currentAd.videoUrl)}`}
             playsInline
             autoPlay
             muted={isMuted}

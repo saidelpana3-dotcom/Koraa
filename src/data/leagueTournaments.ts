@@ -1,6 +1,6 @@
 import { Match, LeagueTournament, LeagueTournamentParticipant, WonTournamentRankRecord, FinishedTournamentRecord } from '../types';
 import { db } from '../lib/firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
 import { getAllCuratedMatches } from './mockMatches';
 import { FINISHED_MATCHES_CATALOG } from '../utils/predictionEvaluator';
 
@@ -128,10 +128,80 @@ export function getActiveLeagueTournament(): LeagueTournament {
 }
 
 /**
- * Save updated League Tournament state
+ * Helper to obtain stable user identity for League Tournament
  */
-export function saveLeagueTournament(tournament: LeagueTournament): void {
+export function getStableLeagueUserId(user?: { uid?: string; email?: string } | null): string {
+  if (user?.uid) return user.uid;
+  if (typeof window !== 'undefined') {
+    let guestUid = localStorage.getItem('kora_guest_uid');
+    if (!guestUid) {
+      guestUid = `guest_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      try {
+        localStorage.setItem('kora_guest_uid', guestUid);
+      } catch (_) {}
+    }
+    return guestUid;
+  }
+  return 'guest';
+}
+
+/**
+ * Merge two participant arrays without losing any enrolled participant or prediction
+ */
+export function mergeLeagueParticipants(
+  listA: LeagueTournamentParticipant[],
+  listB: LeagueTournamentParticipant[],
+  _loggedInUser?: { uid?: string; displayName?: string; email?: string } | null
+): LeagueTournamentParticipant[] {
+  const map = new Map<string, LeagueTournamentParticipant>();
+
+  const addOrMerge = (p: LeagueTournamentParticipant) => {
+    if (!p || !p.userId) return;
+    const uid = String(p.userId).trim();
+    if (!uid) return;
+    const uName = p.userName || 'مشجع كروي';
+
+    const existing = map.get(uid);
+    if (!existing) {
+      const preds = p.predictions && typeof p.predictions === 'object' ? { ...p.predictions } : {};
+      map.set(uid, {
+        ...p,
+        userId: uid,
+        userName: uName,
+        predictions: preds,
+        totalPredictionsCount: Object.keys(preds).length,
+      });
+    } else {
+      const mergedPreds = {
+        ...(existing.predictions || {}),
+        ...(p.predictions || {}),
+      };
+      map.set(uid, {
+        ...existing,
+        ...p,
+        userId: uid,
+        userName: (uName && uName !== 'مشجع كروي' && uName !== 'أنت') ? uName : (existing.userName || uName),
+        joinedAt: existing.joinedAt && p.joinedAt
+          ? (existing.joinedAt < p.joinedAt ? existing.joinedAt : p.joinedAt)
+          : (existing.joinedAt || p.joinedAt || new Date().toISOString()),
+        predictions: mergedPreds,
+        totalPredictionsCount: Object.keys(mergedPreds).length,
+      });
+    }
+  };
+
+  (Array.isArray(listA) ? listA : []).forEach(addOrMerge);
+  (Array.isArray(listB) ? listB : []).forEach(addOrMerge);
+
+  return Array.from(map.values());
+}
+
+/**
+ * Save updated League Tournament state locally and optionally broadcast
+ */
+export function saveLeagueTournament(tournament: LeagueTournament, skipRemoteSync = false): void {
   if (typeof window === 'undefined') return;
+  tournament.participants = mergeLeagueParticipants(tournament.participants || [], []);
   tournament.participantsCount = tournament.participants.length;
   tournament.isUnlocked = tournament.participantsCount >= tournament.minRequiredParticipants;
   if (tournament.isUnlocked && tournament.status === 'RECRUITING') {
@@ -148,6 +218,195 @@ export function saveLeagueTournament(tournament: LeagueTournament): void {
     localStorage.setItem(LEAGUE_TOURNAMENT_STORAGE_KEY, JSON.stringify(tournament));
     window.dispatchEvent(new CustomEvent('kora_league_tournament_updated', { detail: tournament }));
   } catch (_) {}
+
+  if (!skipRemoteSync) {
+    pushLeagueTournamentToRemote(tournament).catch(() => {});
+  }
+}
+
+/**
+ * Push current tournament participants & state to backend server & Firestore
+ */
+export async function pushLeagueTournamentToRemote(tournament: LeagueTournament): Promise<void> {
+  if (typeof window === 'undefined') return;
+
+  // 1. Push to Express API (/api/league-tournament/sync)
+  try {
+    const res = await fetch('/api/league-tournament/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        participants: tournament.participants,
+        status: tournament.status,
+        prizesDistributed: tournament.prizesDistributed,
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.tournament && Array.isArray(data.tournament.participants)) {
+        const merged = mergeLeagueParticipants(tournament.participants, data.tournament.participants);
+        if (merged.length !== tournament.participants.length) {
+          const updated: LeagueTournament = {
+            ...tournament,
+            participants: merged,
+            participantsCount: merged.length,
+            isUnlocked: merged.length >= tournament.minRequiredParticipants,
+            status: merged.length >= tournament.minRequiredParticipants && tournament.status === 'RECRUITING' ? 'ACTIVE' : tournament.status,
+          };
+          saveLeagueTournament(updated, true);
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 2. Push to Firestore directly for multi-instance persistence
+  try {
+    const docRef = doc(db, 'leagueTournaments', tournament.id || 'league_tourn_premier_2026');
+    await setDoc(docRef, {
+      id: tournament.id || 'league_tourn_premier_2026',
+      title: tournament.title,
+      titleAr: tournament.titleAr,
+      requiredParticipants: tournament.minRequiredParticipants,
+      minRequiredParticipants: tournament.minRequiredParticipants,
+      participantsCount: tournament.participants.length,
+      isUnlocked: tournament.participants.length >= tournament.minRequiredParticipants,
+      status: tournament.status,
+      prizesDistributed: Boolean(tournament.prizesDistributed),
+      participants: tournament.participants,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+  } catch (_) {}
+}
+
+let lastLeagueServerSyncAt = 0;
+
+/**
+ * Fetch and merge League Tournament state from Server + Firestore + LocalStorage
+ * Ensures new users immediately see all existing enrolled participants and accurate count.
+ */
+export async function syncLeagueTournamentWithServer(
+  user?: { uid?: string; displayName?: string; email?: string } | null,
+  force = false
+): Promise<LeagueTournament> {
+  const localTourn = getActiveLeagueTournament();
+  const now = Date.now();
+  if (!force && lastLeagueServerSyncAt > 0 && now - lastLeagueServerSyncAt < 20000) {
+    return localTourn;
+  }
+  lastLeagueServerSyncAt = now;
+
+  let mergedParticipants = [...(localTourn.participants || [])];
+  let remoteParticipantCount = mergedParticipants.length;
+  let remoteStatus = localTourn.status;
+  let remotePrizesDistributed = Boolean(localTourn.prizesDistributed);
+
+  // 1. Fetch from Express server
+  try {
+    const res = await fetch('/api/league-tournament');
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.tournament && Array.isArray(data.tournament.participants)) {
+        remoteParticipantCount = data.tournament.participants.length;
+        mergedParticipants = mergeLeagueParticipants(mergedParticipants, data.tournament.participants, user);
+        if (data.tournament.status === 'FINISHED') remoteStatus = 'FINISHED';
+        if (data.tournament.prizesDistributed) remotePrizesDistributed = true;
+      }
+    }
+  } catch (_) {}
+
+  // 2. Fetch from Firestore directly
+  try {
+    const docRef = doc(db, 'leagueTournaments', localTourn.id || 'league_tourn_premier_2026');
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      const fsData = snap.data();
+      if (Array.isArray(fsData?.participants)) {
+        remoteParticipantCount = Math.max(remoteParticipantCount, fsData.participants.length);
+        mergedParticipants = mergeLeagueParticipants(mergedParticipants, fsData.participants, user);
+      }
+      if (fsData?.status === 'FINISHED') remoteStatus = 'FINISHED';
+      if (fsData?.prizesDistributed) remotePrizesDistributed = true;
+    }
+  } catch (_) {}
+
+  const isUnlockedNow = mergedParticipants.length >= localTourn.minRequiredParticipants;
+  if (isUnlockedNow && !localTourn.isUnlocked) {
+    mergedParticipants = backfillParticipantsPredictions(mergedParticipants);
+  }
+
+  const updatedTournament: LeagueTournament = {
+    ...localTourn,
+    participants: mergedParticipants,
+    participantsCount: mergedParticipants.length,
+    isUnlocked: isUnlockedNow,
+    status: remoteStatus === 'FINISHED' ? 'FINISHED' : (isUnlockedNow ? 'ACTIVE' : 'RECRUITING'),
+    prizesDistributed: remotePrizesDistributed,
+  };
+
+  saveLeagueTournament(updatedTournament, true);
+
+  // Only push back if local merge actually discovered new participants that remote didn't have
+  if (mergedParticipants.length > remoteParticipantCount) {
+    pushLeagueTournamentToRemote(updatedTournament).catch(() => {});
+  }
+
+  return updatedTournament;
+}
+
+/**
+ * Subscribe to real-time updates on the League Tournament from both Firestore onSnapshot and server polling
+ */
+export function subscribeToLeagueTournamentRealtime(
+  user?: { uid?: string; displayName?: string; email?: string } | null,
+  onUpdate?: (tournament: LeagueTournament) => void
+): () => void {
+  if (typeof window === 'undefined') return () => {};
+
+  let isActive = true;
+
+  // Initial sync immediately
+  syncLeagueTournamentWithServer(user).then(t => {
+    if (isActive && onUpdate) onUpdate(t);
+  }).catch(() => {});
+
+  // Real-time Firestore listener
+  let unsubscribeFirestore: (() => void) | null = null;
+  try {
+    const docRef = doc(db, 'leagueTournaments', 'league_tourn_premier_2026');
+    unsubscribeFirestore = onSnapshot(docRef, (snap) => {
+      if (!isActive || !snap.exists()) return;
+      const fsData = snap.data();
+      if (Array.isArray(fsData?.participants)) {
+        const current = getActiveLeagueTournament();
+        const merged = mergeLeagueParticipants(current.participants, fsData.participants, user);
+        const isUnlockedNow = merged.length >= current.minRequiredParticipants;
+        const updated: LeagueTournament = {
+          ...current,
+          participants: merged,
+          participantsCount: merged.length,
+          isUnlocked: isUnlockedNow,
+          status: fsData.status === 'FINISHED' ? 'FINISHED' : (isUnlockedNow ? 'ACTIVE' : 'RECRUITING'),
+          prizesDistributed: Boolean(fsData.prizesDistributed || current.prizesDistributed),
+        };
+        saveLeagueTournament(updated, true);
+        if (onUpdate) onUpdate(updated);
+      }
+    }, () => {});
+  } catch (_) {}
+
+  // Periodic server poll every 60 seconds when visible as fallback
+  const intervalId = window.setInterval(() => {
+    if (!isActive || document.visibilityState !== 'visible') return;
+    syncLeagueTournamentWithServer(user).then(t => {
+      if (isActive && onUpdate) onUpdate(t);
+    }).catch(() => {});
+  }, 60000);
+
+  return () => {
+    isActive = false;
+    if (unsubscribeFirestore) unsubscribeFirestore();
+    window.clearInterval(intervalId);
+  };
 }
 
 /**
@@ -191,19 +450,26 @@ export function joinLeagueTournament(
   user: { uid?: string; displayName?: string; email?: string } | null,
   tournament: LeagueTournament
 ): { success: boolean; message: string; tournament: LeagueTournament; isNewlyUnlocked: boolean } {
-  const userId = user?.uid || (typeof window !== 'undefined' ? (localStorage.getItem('kora_guest_uid') || `guest_${Date.now()}`) : 'guest');
-  if (typeof window !== 'undefined' && !localStorage.getItem('kora_guest_uid')) {
-    localStorage.setItem('kora_guest_uid', userId);
-  }
-
+  const userId = getStableLeagueUserId(user);
   const userName = user?.displayName || user?.email?.split('@')[0] || 'مشجع كروي';
 
-  const alreadyJoined = tournament.participants.some(p => p.userId === userId);
+  // Ensure we merge with the latest local storage state first
+  const latestLocal = getActiveLeagueTournament();
+  const baseParticipants = mergeLeagueParticipants(tournament.participants || [], latestLocal.participants || [], user);
+
+  const alreadyJoined = baseParticipants.some(p => p.userId === userId);
   if (alreadyJoined) {
+    const syncedTourn: LeagueTournament = {
+      ...tournament,
+      participants: baseParticipants,
+      participantsCount: baseParticipants.length,
+      isUnlocked: baseParticipants.length >= tournament.minRequiredParticipants,
+    };
+    saveLeagueTournament(syncedTourn);
     return {
       success: true,
       message: 'أنت منضم بالفعل إلى بطولة الدوريات!',
-      tournament,
+      tournament: syncedTourn,
       isNewlyUnlocked: false,
     };
   }
@@ -221,11 +487,13 @@ export function joinLeagueTournament(
     predictions: {},
   };
 
-  let updatedParticipants = [newParticipant, ...tournament.participants];
+  let updatedParticipants = [newParticipant, ...baseParticipants];
   const isUnlockedNow = updatedParticipants.length >= tournament.minRequiredParticipants;
 
   // Once 250 participants threshold is reached, backfill predictions for all players!
   if (isUnlockedNow && !wasUnlocked) {
+    updatedParticipants = backfillParticipantsPredictions(updatedParticipants);
+  } else if (isUnlockedNow) {
     updatedParticipants = backfillParticipantsPredictions(updatedParticipants);
   }
 
@@ -238,6 +506,45 @@ export function joinLeagueTournament(
   };
 
   saveLeagueTournament(updatedTournament);
+
+  // Also explicitly call /api/league-tournament/join and Firestore participant record
+  if (typeof window !== 'undefined') {
+    fetch('/api/league-tournament/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, userName }),
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (data?.tournament && Array.isArray(data.tournament.participants)) {
+          const current = getActiveLeagueTournament();
+          const merged = mergeLeagueParticipants(current.participants, data.tournament.participants, user);
+          const unlocked = merged.length >= current.minRequiredParticipants;
+          const synced: LeagueTournament = {
+            ...current,
+            participants: merged,
+            participantsCount: merged.length,
+            isUnlocked: unlocked,
+            status: unlocked && current.status === 'RECRUITING' ? 'ACTIVE' : current.status,
+          };
+          saveLeagueTournament(synced, true);
+        }
+      })
+      .catch(() => {});
+
+    try {
+      const partRef = doc(db, 'leagueTournamentParticipants', `${updatedTournament.id}_${userId}`);
+      setDoc(partRef, {
+        userId,
+        userName,
+        tournamentId: updatedTournament.id,
+        joinedAt: newParticipant.joinedAt,
+        correctPredictionsCount: 0,
+        exactPredictionsCount: 0,
+        totalPredictionsCount: 0,
+      }, { merge: true }).catch(() => {});
+    } catch (_) {}
+  }
 
   const isNewlyUnlocked = !wasUnlocked && updatedTournament.isUnlocked;
 
@@ -276,7 +583,7 @@ export function syncPredictionToLeagueTournament(
     return { synced: false };
   }
 
-  const userId = user?.uid || (typeof window !== 'undefined' ? localStorage.getItem('kora_guest_uid') || 'guest' : 'guest');
+  const userId = getStableLeagueUserId(user);
 
   // Find if user is joined as participant
   const participantIndex = tournament.participants.findIndex(p => p.userId === userId);
@@ -304,6 +611,14 @@ export function syncPredictionToLeagueTournament(
   };
 
   saveLeagueTournament(updatedTournament);
+
+  if (typeof window !== 'undefined') {
+    fetch('/api/league-tournament/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, matchId, homeScore, awayScore }),
+    }).catch(() => {});
+  }
 
   return {
     synced: true,
@@ -397,6 +712,14 @@ export function submitLeaguePrediction(
   };
 
   saveLeagueTournament(updatedTournament);
+
+  if (typeof window !== 'undefined') {
+    fetch('/api/league-tournament/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, matchId, homeScore, awayScore }),
+    }).catch(() => {});
+  }
 
   return {
     success: true,

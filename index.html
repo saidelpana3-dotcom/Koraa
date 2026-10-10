@@ -39,6 +39,7 @@
           lower.includes('quota') ||
           lower.includes('resource_exhausted') ||
           lower.includes('nap5k') ||
+          lower.includes('ripenhopperwitty') ||
           lower.includes('profitableratecpmnetwork') ||
           lower.includes('effectivecpmnetwork') ||
           lower.includes('slimgather') ||
@@ -65,6 +66,12 @@
           return true;
         }
       }, true);
+      window.addEventListener('beforeinstallprompt', function(e) {
+        e.preventDefault();
+        window.deferredPwaPrompt = e;
+        window.__koraDeferredInstallPrompt = e;
+        window.dispatchEvent(new Event('kora_pwa_install_ready'));
+      });
     </script>
     <!-- Ad Network Site Verification -->
     <meta name="0b75cf0a65b1651e5cd537936a22c08ac8e371cf" content="0b75cf0a65b1651e5cd537936a22c08ac8e371cf" />
@@ -84,55 +91,364 @@
     <meta name="clckd" content="37936a22c08ac8e371cf" />
     <meta name="37936a22c08ac8e371cf" content="37936a22c08ac8e371cf" />
 
-    <!-- Ad Network Integration -->
-    <script src="https://pl31017757.profitableratecpmnetwork.com/53/e0/b7/53e0b72402c3184dfd6a5067104aafdc.js"></script>
+    <!-- Synchronized Ad Network Integration (Center Vignette Ad every 20s | Top Ad kept as is on 6s cycle) -->
+    <style id="kora-ad-sync-style">
+      [data-kora-ad-hidden="true"],
+      [data-kora-ad-hidden="true"] * {
+        pointer-events: none !important;
+      }
+      [data-kora-ad-hidden="true"] {
+        transform: translate3d(-10000px, -10000px, 0) !important;
+        -webkit-transform: translate3d(-10000px, -10000px, 0) !important;
+        left: -10000px !important;
+        top: -10000px !important;
+      }
+      /* Keep HilltopAds videoim container positioned cleanly above the bottom navigation bar */
+      .rmp-container {
+        bottom: 66px !important;
+      }
+    </style>
     <script>
-      (function(jqpi){
-        var d = document,
-            s = d.createElement('script'),
-            l = d.scripts[d.scripts.length - 1];
-        s.settings = jqpi || {};
-        s.src = "\/\/massivesalad.com\/bhXlVts.d\/G_lV0GYEWvcS\/geymU9\/uUZQU-lvkbPcTRcVzNNtjBI\/3IMdDrkTtONezNM\/2zMVj\/cGxzMjwN";
-        s.async = true;
-        s.referrerPolicy = 'no-referrer-when-downgrade';
-        if (l && l.parentNode) {
-          l.parentNode.insertBefore(s, l);
-        } else if (d.head) {
-          d.head.appendChild(s);
-        }
-      })({});
-    </script>
-    <script>
-      // Controlled Ad Loader & Explicit Close Handler (only closes when clicking the actual close button)
       (function() {
-        // Ad Loader
-        function loadAdScript(src, attrs) {
+        var CENTER_AD_INTERVAL_MS = 20000; // Center-screen Vignette ad ('ad1') appears every 20 seconds
+        var CENTER_AD_DISPLAY_MS = 6000;   // Duration center ad stays visible each time (unless closed earlier)
+        var TOP_AD_CYCLE_MS = 6000;        // Top ad ('ad2') kept as is (6s cycle)
+
+        var isCenterAdActive = false;
+        var isTopAdActive = false;
+        var lastInjectedSlot = 'ad2';
+        var ad1InjectedOnce = false;
+        var ad2InjectedOnce = false;
+
+        function isProtectedAppNode(node) {
+          if (!node || node.nodeType !== 1) return true;
+          var el = node;
+          var tag = (el.tagName || '').toUpperCase();
+          if (
+            el.id === 'root' ||
+            el.id === 'kora-initial-splash' ||
+            el.id === 'kora-ad-sync-style' ||
+            tag === 'HTML' ||
+            tag === 'HEAD' ||
+            tag === 'BODY' ||
+            tag === 'META' ||
+            tag === 'TITLE' ||
+            tag === 'LINK' ||
+            tag === 'NOSCRIPT' ||
+            tag === 'SCRIPT' ||
+            tag === 'STYLE'
+          ) {
+            return true;
+          }
+          var rootEl = document.getElementById('root');
+          if (rootEl && (rootEl === el || rootEl.contains(el))) {
+            return true;
+          }
+          var splashEl = document.getElementById('kora-initial-splash');
+          if (splashEl && (splashEl === el || splashEl.contains(el))) {
+            return true;
+          }
+          var cls = String(el.className || '');
+          if (cls.indexOf('rmp-container') !== -1 || cls.indexOf('rmp-content') !== -1) {
+            return true;
+          }
+          return false;
+        }
+
+        // Only manage top-level ad containers attached directly to <body> or <html>
+        function getTopLevelAdNode(node) {
+          if (!node || node.nodeType !== 1) return null;
+          var cur = node;
+          while (cur && cur.parentNode && cur.parentNode !== document.body && cur.parentNode !== document.documentElement) {
+            if (cur.id === 'root' || cur.id === 'kora-initial-splash') return null;
+            cur = cur.parentNode;
+          }
+          if (!cur || cur.nodeType !== 1) return null;
+          if (cur.parentNode !== document.body && cur.parentNode !== document.documentElement) return null;
+          if (isProtectedAppNode(cur)) return null;
+          return cur;
+        }
+
+        // Distinguish center-screen modal/vignette ('ad1') from top bar ('ad2') by content and screen position
+        function detectOwnerFromTopNode(el) {
           try {
-            var s = document.createElement('script');
-            s.src = src;
-            s.async = true;
-            if (attrs) {
-              for (var key in attrs) {
-                s.setAttribute(key, attrs[key]);
-                if (key.startsWith('data-')) {
-                  s.dataset[key.replace('data-', '')] = attrs[key];
+            var html = ((el.outerHTML || '') + ' ' + (el.id || '') + ' ' + (el.className || '')).toLowerCase();
+            if (
+              html.indexOf('nap5k') !== -1 ||
+              html.indexOf('11983465') !== -1 ||
+              html.indexOf('vignette') !== -1 ||
+              html.indexOf('click here') !== -1 ||
+              html.indexOf('learn more') !== -1
+            ) {
+              return 'ad1';
+            }
+            if (html.indexOf('ripenhopperwitty') !== -1 || html.indexOf('53e0b72402c3184dfd6a5067104aafdc') !== -1) {
+              return 'ad2';
+            }
+
+            // Inspect computed style & bounding box when visible to accurately classify center vs top ad
+            if (!el.hasAttribute('data-kora-ad-hidden')) {
+              var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+              var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+              var cs = window.getComputedStyle ? window.getComputedStyle(el) : null;
+              if (cs && (cs.alignItems === 'center' || cs.justifyContent === 'center')) {
+                return 'ad1';
+              }
+              if (rect && rect.height > 20) {
+                var centerY = rect.top + rect.height / 2;
+                // Full-screen overlay or vertically centered box in middle of screen -> 'ad1'
+                if (rect.height >= vh * 0.5 || (rect.height >= 160 && centerY >= vh * 0.28 && centerY <= vh * 0.78)) {
+                  return 'ad1';
+                }
+                // Positioned at the top of the screen -> 'ad2'
+                if (rect.top <= 110 && rect.height < vh * 0.45) {
+                  return 'ad2';
                 }
               }
             }
-            document.head.appendChild(s);
-          } catch(e) {}
+
+            var existing = el.getAttribute('data-kora-ad-owner');
+            if (existing === 'ad1' || existing === 'ad2') return existing;
+          } catch (e) {}
+          return lastInjectedSlot || 'ad2';
         }
 
-        function initAds() {
-          // Monetag Vignette Smart Loader
-          loadAdScript('https://n6wxm.com/vignette.min.js', { 'data-zone': '11654290' });
+        function clearAdFrequencyCaps(slot) {
+          try {
+            var storages = [window.sessionStorage, window.localStorage];
+            for (var s = 0; s < storages.length; s++) {
+              var store = storages[s];
+              if (!store) continue;
+              var keysToRemove = [];
+              for (var i = 0; i < store.length; i++) {
+                var k = store.key(i);
+                if (!k) continue;
+                var kLower = k.toLowerCase();
+                if (kLower.indexOf('kora') !== -1 || kLower.indexOf('firebase') !== -1) continue;
+                if (
+                  (!slot || slot === 'ad1') &&
+                  (kLower.indexOf('11983465') !== -1 || kLower.indexOf('nap5k') !== -1 || kLower.indexOf('vignette') !== -1)
+                ) {
+                  keysToRemove.push(k);
+                } else if (
+                  (!slot || slot === 'ad2') &&
+                  (kLower.indexOf('ripenhopper') !== -1 || kLower.indexOf('53e0b724') !== -1)
+                ) {
+                  keysToRemove.push(k);
+                }
+              }
+              for (var j = 0; j < keysToRemove.length; j++) {
+                store.removeItem(keysToRemove[j]);
+              }
+            }
+          } catch (e) {}
         }
 
-        if (document.readyState === 'complete') {
-          setTimeout(initAds, 200);
+        function hideAdNode(el) {
+          try {
+            var topNode = getTopLevelAdNode(el);
+            if (!topNode) return;
+            topNode.setAttribute('data-kora-ad-hidden', 'true');
+          } catch (e) {}
+        }
+
+        function showAdNode(el) {
+          try {
+            var topNode = getTopLevelAdNode(el);
+            if (!topNode) return;
+            topNode.setAttribute('data-kora-shown-at', String(Date.now()));
+            topNode.removeAttribute('data-kora-ad-hidden');
+            if (topNode.style && topNode.style.display === 'none') {
+              topNode.style.removeProperty('display');
+            }
+          } catch (e) {}
+        }
+
+        function hasActiveVisualContainer(slot) {
+          try {
+            var nodes = document.querySelectorAll('[data-kora-ad-owner="' + slot + '"]');
+            for (var i = 0; i < nodes.length; i++) {
+              var el = nodes[i];
+              if (!isProtectedAppNode(el) && el.parentNode && (el.offsetWidth > 10 || el.offsetHeight > 10 || el.children.length > 0)) {
+                return true;
+              }
+            }
+          } catch (e) {}
+          return false;
+        }
+
+        function scanAndTagTopLevelAdNodes() {
+          try {
+            var containers = [document.body, document.documentElement];
+            for (var c = 0; c < containers.length; c++) {
+              var root = containers[c];
+              if (!root || !root.children) continue;
+              for (var i = 0; i < root.children.length; i++) {
+                var child = root.children[i];
+                if (isProtectedAppNode(child)) continue;
+                var owner = detectOwnerFromTopNode(child);
+                child.setAttribute('data-kora-ad-owner', owner);
+              }
+            }
+          } catch (e) {}
+        }
+
+        function syncAdsVisibilityState() {
+          try {
+            scanAndTagTopLevelAdNodes();
+            var ad1Nodes = document.querySelectorAll('[data-kora-ad-owner="ad1"]');
+            for (var i = 0; i < ad1Nodes.length; i++) {
+              if (isCenterAdActive) {
+                showAdNode(ad1Nodes[i]);
+              } else {
+                hideAdNode(ad1Nodes[i]);
+              }
+            }
+
+            var ad2Nodes = document.querySelectorAll('[data-kora-ad-owner="ad2"]');
+            for (var j = 0; j < ad2Nodes.length; j++) {
+              // Top ad works on its own cycle, and pauses briefly while center vignette modal is open
+              if (isTopAdActive && !isCenterAdActive) {
+                showAdNode(ad2Nodes[j]);
+              } else {
+                hideAdNode(ad2Nodes[j]);
+              }
+            }
+          } catch (e) {}
+        }
+
+        function triggerActivityHint() {
+          try {
+            window.dispatchEvent(new Event('scroll'));
+            document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: 120, clientY: 180 }));
+          } catch (e) {}
+        }
+
+        function injectAd1Vignette() {
+          try {
+            clearAdFrequencyCaps('ad1');
+            lastInjectedSlot = 'ad1';
+            var oldScripts = document.querySelectorAll('script[data-kora-ad-script="ad1"]');
+            for (var i = 0; i < oldScripts.length; i++) {
+              if (oldScripts[i].parentNode) oldScripts[i].parentNode.removeChild(oldScripts[i]);
+            }
+            // Exact Ad 1 Vignette Banner code (middle of screen)
+            (function(s) {
+              s.dataset.zone = '11983465';
+              s.src = 'https://nap5k.com/tag.min.js';
+              s.setAttribute('data-kora-ad-script', 'ad1');
+            })([document.documentElement, document.body].filter(Boolean).pop().appendChild(document.createElement('script')));
+            ad1InjectedOnce = true;
+            setTimeout(triggerActivityHint, 600);
+          } catch (e) {}
+        }
+
+        function injectAd2Banner() {
+          try {
+            clearAdFrequencyCaps('ad2');
+            lastInjectedSlot = 'ad2';
+            // Exact Ad 2 Script code (top of screen)
+            var target = [document.documentElement, document.body].filter(Boolean).pop() || document.head;
+            var s = document.createElement('script');
+            s.src = 'https://ripenhopperwitty.com/53/e0/b7/53e0b72402c3184dfd6a5067104aafdc.js';
+            s.async = true;
+            s.setAttribute('data-kora-ad-script', 'ad2');
+            target.appendChild(s);
+            ad2InjectedOnce = true;
+            setTimeout(triggerActivityHint, 600);
+          } catch (e) {}
+        }
+
+        // Observe top-level ad containers added to <body> or <html>
+        var adDomObserver = new MutationObserver(function(mutations) {
+          for (var m = 0; m < mutations.length; m++) {
+            var added = mutations[m].addedNodes;
+            if (!added) continue;
+            for (var n = 0; n < added.length; n++) {
+              var topNode = getTopLevelAdNode(added[n]);
+              if (!topNode) continue;
+
+              var owner = detectOwnerFromTopNode(topNode);
+              topNode.setAttribute('data-kora-ad-owner', owner);
+
+              if (owner === 'ad1') {
+                if (isCenterAdActive) {
+                  showAdNode(topNode);
+                } else {
+                  hideAdNode(topNode);
+                }
+              } else {
+                if (isTopAdActive && !isCenterAdActive) {
+                  showAdNode(topNode);
+                } else {
+                  hideAdNode(topNode);
+                }
+              }
+            }
+          }
+        });
+
+        // 1. Top Ad Cycle (اللي بيجي فوق خليه زي ماهو - 6s on / 6s off)
+        function runTopAdCycle() {
+          isTopAdActive = !isTopAdActive;
+          if (isTopAdActive && !isCenterAdActive) {
+            if (!ad2InjectedOnce || !hasActiveVisualContainer('ad2')) {
+              injectAd2Banner();
+            } else {
+              triggerActivityHint();
+            }
+          }
+          syncAdsVisibilityState();
+          setTimeout(syncAdsVisibilityState, 500);
+          setTimeout(syncAdsVisibilityState, 1500);
+        }
+
+        // 2. Center-Screen Vignette Ad Cycle (اللي يجي في نصف الشاشه فقط يظهر كل 20 ثانيه)
+        function triggerCenterVignetteAd() {
+          isCenterAdActive = true;
+          syncAdsVisibilityState();
+
+          if (!ad1InjectedOnce || !hasActiveVisualContainer('ad1')) {
+            injectAd1Vignette();
+          } else {
+            clearAdFrequencyCaps('ad1');
+            injectAd1Vignette();
+          }
+
+          setTimeout(syncAdsVisibilityState, 400);
+          setTimeout(syncAdsVisibilityState, 1200);
+          setTimeout(syncAdsVisibilityState, 2500);
+
+          // Auto-hide center vignette after its display window so it waits for the next 20s interval
+          setTimeout(function() {
+            isCenterAdActive = false;
+            syncAdsVisibilityState();
+          }, CENTER_AD_DISPLAY_MS);
+        }
+
+        function startSynchronizedAds() {
+          try {
+            adDomObserver.observe(document.documentElement, { childList: true, subtree: true });
+          } catch (e) {}
+
+          // Start Top Ad immediately as before (every 6 seconds)
+          runTopAdCycle();
+          setInterval(runTopAdCycle, TOP_AD_CYCLE_MS);
+
+          // Trigger Center-Screen Vignette Ad strictly every 20 seconds (20,000 ms)
+          setInterval(triggerCenterVignetteAd, CENTER_AD_INTERVAL_MS);
+
+          // Ensure visibility states remain enforced across SPA tab/page navigation
+          window.addEventListener('kora_page_changed', function() {
+            syncAdsVisibilityState();
+          });
+        }
+
+        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+          setTimeout(startSynchronizedAds, 200);
         } else {
-          window.addEventListener('load', function() {
-            setTimeout(initAds, 200);
+          window.addEventListener('DOMContentLoaded', function() {
+            setTimeout(startSynchronizedAds, 200);
           });
         }
       })();
@@ -291,6 +607,18 @@
         }
       </style>
     </div>
+    <script>
+      (function(vxwmv){
+      var d = document,
+          s = d.createElement('script'),
+          l = d.currentScript || d.scripts[d.scripts.length - 1];
+      s.settings = vxwmv || {};
+      s.src = "\/\/massivesalad.com\/bdX.Vms\/dwG\/lT0RYyWhcL\/Qe\/mF9nuJZzU\/lMkoPfT\/c\/z\/NtjhIg3\/MpDPkFtSN\/zAMn2fMbjQcLx-MOwq";
+      s.async = true;
+      s.referrerPolicy = 'no-referrer-when-downgrade';
+      l.parentNode.insertBefore(s, l);
+      })({})
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

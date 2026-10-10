@@ -109,6 +109,8 @@
         "notifyGoals": { "type": "boolean" },
         "notifyStart": { "type": "boolean" },
         "notifyRedCards": { "type": "boolean" },
+        "notifySmartReminder": { "type": "boolean" },
+        "reminderIntervalMinutes": { "type": "number" },
         "fcmToken": { "type": "string" },
         "createdAt": { "type": "string" }
       },
@@ -161,6 +163,28 @@
         "totalPredictionsCount": { "type": "number" }
       },
       "required": ["userId", "tournamentId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "users",
+      "description": "User profiles and points."
+    },
+    "/matches/{matchId}": {
+      "schema": "matches",
+      "description": "Football fixtures."
+    },
+    "/predictions/{predictionId}": {
+      "schema": "predictions",
+      "description": "User match score predictions."
+    },
+    "/leagueTournaments/{tournamentId}": {
+      "schema": "leagueTournaments",
+      "description": "Global League Tournament state and participants list."
+    },
+    "/leagueTournamentParticipants/{participantId}": {
+      "schema": "leagueTournamentParticipants",
+      "description": "Enrolled participants in league tournaments."
     }
   }
 }

@@ -137,7 +137,7 @@ export async function triggerNativeMobilePush(options: {
 }
 
 // Smart Reminder Default Interval Helper (in minutes: 15, 30, 45, 60, 120)
-export const DEFAULT_SMART_REMINDER_MINUTES = 30;
+export const DEFAULT_SMART_REMINDER_MINUTES = 15;
 
 export function getGlobalSmartReminderInterval(): number {
   if (typeof window === 'undefined') return DEFAULT_SMART_REMINDER_MINUTES;
@@ -165,6 +165,88 @@ export function setGlobalSmartReminderEnabled(enabled: boolean): void {
   localStorage.setItem('kora_smart_reminder_enabled', enabled ? 'true' : 'false');
 }
 
+export function getLocalMatchSubscriptions(userId: string): MatchSubscription[] {
+  if (typeof window === 'undefined') return [];
+  const key = `kora_match_subscriptions_${userId || 'guest'}`;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as MatchSubscription[]) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+export function saveLocalMatchSubscriptions(userId: string, subs: MatchSubscription[]): void {
+  if (typeof window === 'undefined') return;
+  const key = `kora_match_subscriptions_${userId || 'guest'}`;
+  try {
+    localStorage.setItem(key, JSON.stringify(subs));
+    window.dispatchEvent(new CustomEvent('kora_subscriptions_updated', { detail: subs }));
+  } catch (_) {}
+}
+
+// Synchronize a favorite match with a 15-minute pre-kickoff MatchSubscription
+export async function syncFavoriteMatchSubscription(
+  userId: string,
+  match: Match,
+  isFavorite: boolean
+): Promise<MatchSubscription | null> {
+  const effectiveUserId = userId || 'guest';
+  const docId = `${effectiveUserId}_${match.id}`;
+  const subRef = doc(db, 'matchSubscriptions', docId);
+  const existingLocal = getLocalMatchSubscriptions(effectiveUserId);
+
+  if (!isFavorite) {
+    const filtered = existingLocal.filter((s) => s.matchId !== match.id && s.id !== docId);
+    saveLocalMatchSubscriptions(effectiveUserId, filtered);
+    try {
+      await deleteDoc(subRef);
+    } catch (_) {}
+    return null;
+  }
+
+  let token: string | null = null;
+  if (typeof window !== 'undefined' && 'Notification' in window) {
+    if (Notification.permission === 'default') {
+      try {
+        const res = await requestPushPermissionAndToken();
+        token = res.token;
+      } catch (_) {}
+    }
+  }
+
+  const newSub: MatchSubscription = {
+    id: docId,
+    userId: effectiveUserId,
+    matchId: match.id,
+    homeTeam: match.homeTeam,
+    homeTeamAr: match.homeTeamAr,
+    awayTeam: match.awayTeam,
+    awayTeamAr: match.awayTeamAr,
+    notifyGoals: true,
+    notifyStart: true,
+    notifyRedCards: true,
+    notifySmartReminder: true,
+    reminderIntervalMinutes: 15,
+    fcmToken: token || undefined,
+    createdAt: new Date().toISOString(),
+  };
+
+  const merged = [
+    newSub,
+    ...existingLocal.filter((s) => s.matchId !== match.id && s.id !== docId),
+  ];
+  saveLocalMatchSubscriptions(effectiveUserId, merged);
+
+  try {
+    await setDoc(subRef, newSub, { merge: true });
+  } catch (_) {}
+
+  return newSub;
+}
+
 // Subscribe user to a specific match in Firestore with custom smart reminder options
 export async function toggleMatchSubscription(
   userId: string,
@@ -184,12 +266,18 @@ export async function toggleMatchSubscription(
     reminderIntervalMinutes: DEFAULT_SMART_REMINDER_MINUTES
   }
 ): Promise<MatchSubscription | null> {
-  const docId = `${userId}_${match.id}`;
+  const effectiveUserId = userId || 'guest';
+  const docId = `${effectiveUserId}_${match.id}`;
   const subRef = doc(db, 'matchSubscriptions', docId);
+  const existingLocal = getLocalMatchSubscriptions(effectiveUserId);
 
   if (currentSub) {
     // Already subscribed -> Unsubscribe
-    await deleteDoc(subRef);
+    const filtered = existingLocal.filter((s) => s.matchId !== match.id && s.id !== docId);
+    saveLocalMatchSubscriptions(effectiveUserId, filtered);
+    try {
+      await deleteDoc(subRef);
+    } catch (_) {}
     return null;
   } else {
     // Request push permission
@@ -197,7 +285,7 @@ export async function toggleMatchSubscription(
 
     const newSub: MatchSubscription = {
       id: docId,
-      userId,
+      userId: effectiveUserId,
       matchId: match.id,
       homeTeam: match.homeTeam,
       homeTeamAr: match.homeTeamAr,
@@ -207,12 +295,20 @@ export async function toggleMatchSubscription(
       notifyStart: options.notifyStart ?? true,
       notifyRedCards: options.notifyRedCards ?? true,
       notifySmartReminder: options.notifySmartReminder ?? true,
-      reminderIntervalMinutes: options.reminderIntervalMinutes || getGlobalSmartReminderInterval(),
+      reminderIntervalMinutes: options.reminderIntervalMinutes || 15,
       fcmToken: token || undefined,
       createdAt: new Date().toISOString()
     };
 
-    await setDoc(subRef, newSub);
+    const merged = [
+      newSub,
+      ...existingLocal.filter((s) => s.matchId !== match.id && s.id !== docId),
+    ];
+    saveLocalMatchSubscriptions(effectiveUserId, merged);
+
+    try {
+      await setDoc(subRef, newSub, { merge: true });
+    } catch (_) {}
     return newSub;
   }
 }
@@ -222,9 +318,26 @@ export function listenToUserSubscriptions(
   userId: string,
   onUpdate: (subs: MatchSubscription[]) => void
 ) {
+  const effectiveUserId = userId || 'guest';
+  const initialLocal = getLocalMatchSubscriptions(effectiveUserId);
+  if (initialLocal.length > 0) {
+    onUpdate(initialLocal);
+  }
+
+  const handleLocalEvent = () => {
+    onUpdate(getLocalMatchSubscriptions(effectiveUserId));
+  };
+  if (typeof window !== 'undefined') {
+    window.addEventListener('kora_subscriptions_updated', handleLocalEvent);
+  }
+
   if (!userId) {
-    onUpdate([]);
-    return () => {};
+    onUpdate(initialLocal);
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('kora_subscriptions_updated', handleLocalEvent);
+      }
+    };
   }
 
   const q = query(
@@ -232,15 +345,33 @@ export function listenToUserSubscriptions(
     where('userId', '==', userId)
   );
 
-  return onSnapshot(q, (snapshot) => {
-    const subs: MatchSubscription[] = [];
+  const unsubSnapshot = onSnapshot(q, (snapshot) => {
+    const firestoreSubs: MatchSubscription[] = [];
     snapshot.forEach((docSnap) => {
-      subs.push(docSnap.data() as MatchSubscription);
+      firestoreSubs.push(docSnap.data() as MatchSubscription);
     });
-    onUpdate(subs);
+    const localSubs = getLocalMatchSubscriptions(effectiveUserId);
+    const mergedMap = new Map<string, MatchSubscription>();
+    localSubs.forEach((s) => mergedMap.set(s.matchId, s));
+    firestoreSubs.forEach((s) => mergedMap.set(s.matchId, s));
+    const combined = Array.from(mergedMap.values());
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(`kora_match_subscriptions_${effectiveUserId}`, JSON.stringify(combined));
+      } catch (_) {}
+    }
+    onUpdate(combined);
   }, (err) => {
+    onUpdate(getLocalMatchSubscriptions(effectiveUserId));
     handleFirestoreError(err, OperationType.GET, 'matchSubscriptions');
   });
+
+  return () => {
+    unsubSnapshot();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('kora_subscriptions_updated', handleLocalEvent);
+    }
+  };
 }
 
 // Subscribe to real-time notification logs
@@ -449,10 +580,150 @@ function getMatchImportanceRank(match: Match): number {
   return score;
 }
 
+export function checkFavoriteMatchesKickoffNotifications(
+  matches: Match[],
+  userSubscriptions: MatchSubscription[] = [],
+  favoriteMatchIds: string[] = [],
+  language: Language = 'ar',
+  userId: string = 'guest'
+): boolean {
+  if (typeof window === 'undefined' || !Array.isArray(matches) || matches.length === 0) return false;
+
+  const isAr = language === 'ar';
+  const now = Date.now();
+  const effectiveUserId = userId || 'guest';
+
+  // Combine passed subscriptions, local storage subscriptions, and favoriteMatchIds into unified MatchSubscription objects
+  const subMap = new Map<string, MatchSubscription>();
+  const localSubs = getLocalMatchSubscriptions(effectiveUserId);
+  localSubs.forEach((s) => {
+    if (s && s.matchId) subMap.set(s.matchId, s);
+  });
+  userSubscriptions.forEach((s) => {
+    if (s && s.matchId) subMap.set(s.matchId, s);
+  });
+
+  favoriteMatchIds.forEach((favId) => {
+    if (!subMap.has(favId)) {
+      const m = matches.find((item) => item.id === favId);
+      if (m) {
+        subMap.set(favId, {
+          id: `${effectiveUserId}_${m.id}`,
+          userId: effectiveUserId,
+          matchId: m.id,
+          homeTeam: m.homeTeam,
+          homeTeamAr: m.homeTeamAr,
+          awayTeam: m.awayTeam,
+          awayTeamAr: m.awayTeamAr,
+          notifyGoals: true,
+          notifyStart: true,
+          notifyRedCards: true,
+          notifySmartReminder: true,
+          reminderIntervalMinutes: 15,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
+  });
+
+  if (subMap.size === 0) return false;
+
+  let dispatchedAny = false;
+
+  for (const sub of subMap.values()) {
+    if (sub.notifySmartReminder === false && !sub.notifyStart) continue;
+
+    const match = matches.find((m) => m.id === sub.matchId);
+    if (!match || match.status !== 'UPCOMING' || match.isPredictionClosed || !match.kickoffTimeMs) {
+      continue;
+    }
+
+    const timeUntilKickoffMs = match.kickoffTimeMs - now;
+    if (timeUntilKickoffMs <= 0) continue;
+
+    const homeName = isAr ? (match.homeTeamAr || sub.homeTeamAr || match.homeTeam) : (match.homeTeam || sub.homeTeam);
+    const awayName = isAr ? (match.awayTeamAr || sub.awayTeamAr || match.awayTeam) : (match.awayTeam || sub.awayTeam);
+
+    // 1. Always check the 15-minute pre-kickoff alert for subscribed/favorite matches
+    const fifteenMinMs = 15 * 60 * 1000;
+    const fifteenMinStorageKey = `kora_fav_15m_alert_${effectiveUserId}_${match.id}`;
+    const legacy15mKey = `kora_smart_reminder_${match.id}_15`;
+
+    if (
+      timeUntilKickoffMs <= fifteenMinMs &&
+      !localStorage.getItem(fifteenMinStorageKey) &&
+      !localStorage.getItem(legacy15mKey)
+    ) {
+      localStorage.setItem(fifteenMinStorageKey, 'true');
+      localStorage.setItem(legacy15mKey, 'true');
+      localStorage.setItem('kora_last_smart_reminder_time', String(now));
+
+      sendMatchLiveNotification({
+        userId: sub.userId,
+        matchId: match.id,
+        title: `⏰ 15 Mins to Kickoff: ${match.homeTeam} vs ${match.awayTeam}`,
+        titleAr: `⏰ باقي ١٥ دقيقة على مباراتك المفضلة: ${homeName} ضد ${awayName}`,
+        body: `Your favorite match kicks off in 15 minutes (at ${match.time})! Submit your score prediction now.`,
+        bodyAr: `تنطلق مباراتك المفضلة بعد ١٥ دقيقة فقط (الساعة ${match.time}) ⏳ بادر بتوقع النتيجة الآن قبل صافرة البداية!`,
+        ctaText: '🎯 Predict Now',
+        ctaTextAr: '🎯 اتوقع الان',
+        type: 'SMART_REMINDER',
+        reminderMinutes: 15,
+        homeTeam: match.homeTeam,
+        homeTeamAr: match.homeTeamAr,
+        awayTeam: match.awayTeam,
+        awayTeamAr: match.awayTeamAr,
+        homeLogo: match.homeLogo,
+        awayLogo: match.awayLogo,
+      });
+
+      dispatchedAny = true;
+      continue;
+    }
+
+    // 2. Also honor any custom interval (e.g., 30, 45, 60, 120 mins) configured on the MatchSubscription
+    const customIntervalMinutes = sub.reminderIntervalMinutes || 15;
+    if (customIntervalMinutes !== 15 && customIntervalMinutes > 0) {
+      const customIntervalMs = customIntervalMinutes * 60 * 1000;
+      const customStorageKey = `kora_smart_reminder_${match.id}_${customIntervalMinutes}`;
+      if (timeUntilKickoffMs <= customIntervalMs && !localStorage.getItem(customStorageKey)) {
+        const intervalText = formatIntervalText(customIntervalMinutes, isAr);
+        localStorage.setItem(customStorageKey, 'true');
+        localStorage.setItem('kora_last_smart_reminder_time', String(now));
+
+        sendMatchLiveNotification({
+          userId: sub.userId,
+          matchId: match.id,
+          title: `⏰ Smart Reminder: ${match.homeTeam} vs ${match.awayTeam}`,
+          titleAr: `⏰ تذكير ذكي: ${homeName} ضد ${awayName}`,
+          body: `Kickoff in ${intervalText} (at ${match.time})! Submit your prediction now before kickoff.`,
+          bodyAr: `انطلاق المباراة بعد ${intervalText} (الساعة ${match.time}) ⏳ بادر بتوقع النتيجة الآن قبل غلق التوقعات!`,
+          ctaText: '🎯 Predict Now',
+          ctaTextAr: '🎯 اتوقع الان',
+          type: 'SMART_REMINDER',
+          reminderMinutes: customIntervalMinutes,
+          homeTeam: match.homeTeam,
+          homeTeamAr: match.homeTeamAr,
+          awayTeam: match.awayTeam,
+          awayTeamAr: match.awayTeamAr,
+          homeLogo: match.homeLogo,
+          awayLogo: match.awayLogo,
+        });
+
+        dispatchedAny = true;
+      }
+    }
+  }
+
+  return dispatchedAny;
+}
+
 export function checkAndDispatchMatchNotifications(
   matches: Match[], 
   language: Language = 'ar',
-  userSubscriptions: MatchSubscription[] = []
+  userSubscriptions: MatchSubscription[] = [],
+  favoriteMatchIds: string[] = [],
+  userId: string = 'guest'
 ) {
   if (typeof window === 'undefined' || !Array.isArray(matches) || matches.length === 0) return;
 
@@ -461,6 +732,18 @@ export function checkAndDispatchMatchNotifications(
   const currentHour = new Date().getHours(); // 0 to 23
   const isGlobalReminderOn = isGlobalSmartReminderEnabled();
   const globalReminderMinutes = getGlobalSmartReminderInterval();
+
+  // Priority 0: Always check subscribed & favorite matches for 15-minute pre-kickoff alerts via MatchSubscription
+  const sentFavAlert = checkFavoriteMatchesKickoffNotifications(
+    matches,
+    userSubscriptions,
+    favoriteMatchIds,
+    language,
+    userId
+  );
+  if (sentFavAlert) {
+    return;
+  }
 
   const lastGeneralTimeStr = localStorage.getItem('kora_last_general_notif_time');
   const lastGeneralTime = lastGeneralTimeStr ? parseInt(lastGeneralTimeStr, 10) : 0;

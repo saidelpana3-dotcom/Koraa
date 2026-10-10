@@ -9,7 +9,9 @@ import {
   setGlobalSmartReminderInterval,
   isGlobalSmartReminderEnabled,
   setGlobalSmartReminderEnabled,
-  clearAllNotificationLogs
+  clearAllNotificationLogs,
+  getLocalMatchSubscriptions,
+  saveLocalMatchSubscriptions
 } from '../lib/notifications';
 import { db, doc, deleteDoc } from '../lib/firebase';
 
@@ -80,6 +82,9 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
   };
 
   const handleUnsubscribe = async (subId: string) => {
+    const effectiveUserId = userId || 'guest';
+    const localSubs = getLocalMatchSubscriptions(effectiveUserId).filter((s) => s.id !== subId);
+    saveLocalMatchSubscriptions(effectiveUserId, localSubs);
     try {
       await deleteDoc(doc(db, 'matchSubscriptions', subId));
     } catch (err) {
@@ -267,7 +272,7 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                 </div>
               ) : (
                 subscriptions.map((sub) => {
-                  const reminderMins = sub.reminderIntervalMinutes || 30;
+                  const reminderMins = sub.reminderIntervalMinutes || 15;
                   const intervalObj = REMINDER_OPTIONS.find(o => o.value === reminderMins);
                   const intervalStr = isAr ? intervalObj?.labelAr || `${reminderMins} د` : intervalObj?.labelEn || `${reminderMins}m`;
 

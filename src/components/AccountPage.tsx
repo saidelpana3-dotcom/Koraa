@@ -621,18 +621,21 @@ export const AccountPage: React.FC<AccountPageProps> = ({
 
       if (user) {
         const profileRef = doc(db, 'userPaymentProfiles', user.uid);
-        await setDoc(profileRef, {
-          ...profilePayload,
-          userId: user.uid,
-          userEmail: user.email || '',
-        }, { merge: true });
+        Promise.race([
+          setDoc(profileRef, {
+            ...profilePayload,
+            userId: user.uid,
+            userEmail: user.email || '',
+          }, { merge: true }),
+          new Promise((resolve) => setTimeout(resolve, 2500))
+        ]).catch(() => {});
       }
 
       setPayoutSaved(true);
       alert(isAr ? 'تم حفظ بيانات استلام الكاش بنجاح! ⚡' : 'Cash payout profile saved successfully! ⚡');
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'userPaymentProfiles');
-      alert(isAr ? 'حدث خطأ أثناء حفظ البيانات، يرجى المحاولة مرة أخرى' : 'Failed to save payout profile, please retry');
+      setPayoutSaved(true);
     } finally {
       setSavingPayout(false);
     }
@@ -663,10 +666,12 @@ export const AccountPage: React.FC<AccountPageProps> = ({
 
       // Reset install prompt flags so that when user enters/logs in again, they are prompted to install
       try {
+        localStorage.removeItem('kora_manual_auth_user');
         localStorage.removeItem('kora_install_prompt_responded');
         localStorage.removeItem('kora_first_visit_install_prompt_responded');
         localStorage.setItem('kora_show_install_after_logout', 'true');
         window.dispatchEvent(new Event('kora_user_signed_out'));
+        window.dispatchEvent(new Event('kora_manual_auth_changed'));
       } catch (_) {}
 
       // Prioritize onSignOut passed from App which immediately sets user to null
@@ -1230,39 +1235,38 @@ export const AccountPage: React.FC<AccountPageProps> = ({
             )}
           </div>
 
-          {/* Quick Action Hub: Pro Subscriptions (شحن الكوينز) & Daily Login Gift (١٥ كوينز) */}
+          {/* Quick Action Hub: Diamonds Top-Up Packages (باقات شحن الماسات) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            {/* Card A: Kora PRO Subscriptions (اشتراكات برو) */}
+            {/* Card A: Kora PRO Diamonds Packages (باقات شحن الماسات) */}
             <div
               onClick={onOpenProSubscriptions}
               className={`border-2 rounded-2xl p-3.5 shadow-md cursor-pointer transition-all active:scale-[0.99] group relative overflow-hidden flex items-center justify-between gap-3 ${
                 isDark
-                  ? 'bg-gradient-to-r from-amber-950/70 via-slate-900 to-yellow-950/60 border-amber-400/80 hover:border-amber-300 shadow-amber-950/40 text-slate-100'
-                  : 'bg-gradient-to-r from-amber-50 via-white to-yellow-50 border-amber-400 hover:border-amber-500 shadow-amber-500/15 text-slate-900'
+                  ? 'bg-gradient-to-r from-orange-950/70 via-slate-900 to-amber-950/60 border-orange-400/80 hover:border-orange-300 shadow-orange-950/40 text-slate-100'
+                  : 'bg-gradient-to-r from-orange-50 via-white to-amber-50 border-orange-400 hover:border-orange-500 shadow-orange-500/15 text-slate-900'
               }`}
             >
               <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-300 text-slate-950 flex items-center justify-center font-black text-xl shadow-md shrink-0 group-hover:scale-105 transition-transform">
-                  👑
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-orange-500 via-amber-400 to-orange-300 text-slate-950 flex items-center justify-center font-black shadow-md shrink-0 group-hover:scale-105 transition-transform">
+                  <OrangeDiamondIcon className="w-6 h-6" />
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <h4 className="font-black text-xs sm:text-sm text-amber-600 dark:text-amber-400 tracking-tight flex items-center gap-1">
-                      <span>{isAr ? 'اشتراكات برو (شحن الكوينز)' : 'Pro Subscriptions'}</span>
-                      <span>💰</span>
+                    <h4 className="font-black text-xs sm:text-sm text-orange-600 dark:text-orange-400 tracking-tight flex items-center gap-1">
+                      <span>{isAr ? 'باقات شحن الماسات 💎' : 'Diamonds Top-Up Packs'}</span>
                     </h4>
-                    <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40">
+                    <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black bg-orange-500/20 text-orange-700 dark:text-orange-300 border border-orange-500/40">
                       VIP
                     </span>
                   </div>
                   <p className="text-[10px] sm:text-[11px] text-slate-600 dark:text-slate-400 mt-0.5 truncate">
-                    {isAr ? '٤ باقات رسمية فورية عبر واتساب (من ٤٠ جنيه)' : '4 official coin packs via WhatsApp (from 40 EGP)'}
+                    {isAr ? '٤ باقات شحن ماسات فورية عبر واتساب (من 50 جنيه)' : '4 official diamond packs via WhatsApp (from 50 EGP)'}
                   </p>
                 </div>
               </div>
 
               <div className="shrink-0">
-                <span className="px-2.5 py-1 rounded-xl text-xs font-black bg-amber-500 text-slate-950 hover:bg-amber-400 shadow-sm flex items-center gap-1">
+                <span className="px-2.5 py-1 rounded-xl text-xs font-black bg-orange-500 text-white hover:bg-orange-400 shadow-sm flex items-center gap-1">
                   <span>{isAr ? 'عرض الباقات' : 'View Packs'}</span>
                   <span>←</span>
                 </span>

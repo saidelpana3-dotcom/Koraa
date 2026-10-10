@@ -24,7 +24,9 @@ import {
   joinLeagueTournament, 
   submitLeaguePrediction, 
   calculateLeagueStandings, 
-  isLeagueMatchLocked
+  isLeagueMatchLocked,
+  getStableLeagueUserId,
+  subscribeToLeagueTournamentRealtime
 } from '../data/leagueTournaments';
 import { TeamLogo } from './TeamLogo';
 import { OrangeDiamondIcon } from './OrangeDiamondIcon';
@@ -34,6 +36,7 @@ interface LeagueTournamentViewProps {
   theme?: ThemeMode;
   user: any;
   allMatches?: Match[];
+  userPredictions?: Record<string, { predictedHomeScore: number; predictedAwayScore: number }>;
   onOpenDetails?: (match: Match, tab?: 'lineup' | 'stats' | 'events' | 'predict') => void;
   onSavePrediction?: (match: Match, homeScore: number, awayScore: number) => void;
   userDiamonds?: number;
@@ -47,6 +50,7 @@ export const LeagueTournamentView: React.FC<LeagueTournamentViewProps> = ({
   theme = 'light',
   user,
   allMatches = [],
+  userPredictions = {},
   onOpenDetails,
   onSavePrediction,
   userDiamonds = 0,
@@ -61,16 +65,22 @@ export const LeagueTournamentView: React.FC<LeagueTournamentViewProps> = ({
   // Active Tournament state
   const [tournament, setTournament] = useState<LeagueTournament>(() => getActiveLeagueTournament());
 
-  // Listen to tournament updates from other views (e.g. when predicted on main matches screen)
+  // Listen to tournament updates from local events + real-time server/Firestore sync
   useEffect(() => {
     const handleTournamentUpdate = () => {
-      setTournament(getActiveLeagueTournament());
+      setTournament({ ...getActiveLeagueTournament() });
     };
     window.addEventListener('kora_league_tournament_updated', handleTournamentUpdate);
+
+    const unsubscribeRealtime = subscribeToLeagueTournamentRealtime(user, (updated) => {
+      setTournament({ ...updated });
+    });
+
     return () => {
       window.removeEventListener('kora_league_tournament_updated', handleTournamentUpdate);
+      unsubscribeRealtime();
     };
-  }, []);
+  }, [user?.uid]);
 
   // Prediction input state: Record<matchId, { home: number; away: number }>
   const [predictionInputs, setPredictionInputs] = useState<Record<string, { home: number; away: number }>>({});
@@ -78,7 +88,7 @@ export const LeagueTournamentView: React.FC<LeagueTournamentViewProps> = ({
   // Action status feedback
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
-  const currentUserId = user?.uid || (typeof window !== 'undefined' ? localStorage.getItem('kora_guest_uid') || 'guest' : 'guest');
+  const currentUserId = useMemo(() => getStableLeagueUserId(user), [user?.uid]);
   const currentUserName = user?.displayName || user?.email?.split('@')[0] || (isAr ? 'أنت' : 'You');
 
   // Check if current user has joined
@@ -101,17 +111,21 @@ export const LeagueTournamentView: React.FC<LeagueTournamentViewProps> = ({
     return standings.find(p => p.userId === currentUserId);
   }, [standings, currentUserId]);
 
+  const actualParticipantsCount = useMemo(() => {
+    return Math.max(tournament.participantsCount || 0, tournament.participants?.length || 0);
+  }, [tournament.participantsCount, tournament.participants]);
+
   // Progress percentage toward 250 participants
   const participantsProgress = useMemo(() => {
-    return Math.min(100, Math.round((tournament.participantsCount / tournament.minRequiredParticipants) * 100));
-  }, [tournament.participantsCount, tournament.minRequiredParticipants]);
+    return Math.min(100, Math.round((actualParticipantsCount / tournament.minRequiredParticipants) * 100));
+  }, [actualParticipantsCount, tournament.minRequiredParticipants]);
 
-  const remainingParticipants = Math.max(0, tournament.minRequiredParticipants - tournament.participantsCount);
+  const remainingParticipants = Math.max(0, tournament.minRequiredParticipants - actualParticipantsCount);
 
   // Handle Free Joining
   const handleJoinTournament = () => {
     const res = joinLeagueTournament(user, tournament);
-    setTournament(res.tournament);
+    setTournament({ ...res.tournament });
     setStatusMessage(res.message);
     setTimeout(() => setStatusMessage(null), 5000);
   };
@@ -223,7 +237,7 @@ export const LeagueTournamentView: React.FC<LeagueTournamentViewProps> = ({
               )}
             </div>
             <div className="font-mono text-slate-700 dark:text-slate-300">
-              <span className="text-emerald-600 dark:text-emerald-400 font-black">{tournament.participantsCount}</span>
+              <span className="text-emerald-600 dark:text-emerald-400 font-black">{actualParticipantsCount}</span>
               <span className="text-slate-400"> / </span>
               <span>{tournament.minRequiredParticipants}</span>
               <span className="text-[11px] text-slate-600 dark:text-slate-400 font-sans mx-1">
@@ -394,7 +408,13 @@ export const LeagueTournamentView: React.FC<LeagueTournamentViewProps> = ({
               <div className="grid grid-cols-1 gap-3">
                 {tournament.matches.map((match) => {
                   const isLocked = isLeagueMatchLocked(match);
-                  const userPred = userParticipant?.predictions?.[match.id];
+                  const syncedPred = userPredictions?.[match.id];
+                  const userPred = userParticipant?.predictions?.[match.id] || (syncedPred ? {
+                    matchId: match.id,
+                    predictedHomeScore: syncedPred.predictedHomeScore,
+                    predictedAwayScore: syncedPred.predictedAwayScore,
+                    submittedAt: new Date().toISOString(),
+                  } : undefined);
                   const currentInput = predictionInputs[match.id] || {
                     home: userPred?.predictedHomeScore ?? 0,
                     away: userPred?.predictedAwayScore ?? 0,

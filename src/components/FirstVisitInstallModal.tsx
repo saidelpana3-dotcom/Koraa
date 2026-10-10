@@ -57,14 +57,20 @@ export const FirstVisitInstallModal: React.FC<FirstVisitInstallModalProps> = ({
     setPlatform(detected);
 
     // 3. Capture deferred install prompt
-    if ((window as any).deferredPwaPrompt) {
-      setDeferredPrompt((window as any).deferredPwaPrompt);
+    if ((window as any).deferredPwaPrompt || (window as any).__koraDeferredInstallPrompt) {
+      setDeferredPrompt((window as any).deferredPwaPrompt || (window as any).__koraDeferredInstallPrompt);
     }
 
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e);
       (window as any).deferredPwaPrompt = e;
+      (window as any).__koraDeferredInstallPrompt = e;
+    };
+
+    const handlePwaReady = () => {
+      const existing = (window as any).deferredPwaPrompt || (window as any).__koraDeferredInstallPrompt;
+      if (existing) setDeferredPrompt(existing);
     };
 
     const handleAppInstalled = () => {
@@ -91,6 +97,7 @@ export const FirstVisitInstallModal: React.FC<FirstVisitInstallModalProps> = ({
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('kora_pwa_install_ready', handlePwaReady);
     window.addEventListener('appinstalled', handleAppInstalled);
     window.addEventListener('kora_trigger_pwa_install', handleTriggerPrompt);
     window.addEventListener('kora_show_first_visit_install_prompt', handleTriggerPrompt);
@@ -118,6 +125,7 @@ export const FirstVisitInstallModal: React.FC<FirstVisitInstallModalProps> = ({
       return () => {
         clearTimeout(timer);
         window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+        window.removeEventListener('kora_pwa_install_ready', handlePwaReady);
         window.removeEventListener('appinstalled', handleAppInstalled);
         window.removeEventListener('kora_trigger_pwa_install', handleTriggerPrompt);
         window.removeEventListener('kora_show_first_visit_install_prompt', handleTriggerPrompt);
@@ -127,6 +135,7 @@ export const FirstVisitInstallModal: React.FC<FirstVisitInstallModalProps> = ({
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('kora_pwa_install_ready', handlePwaReady);
       window.removeEventListener('appinstalled', handleAppInstalled);
       window.removeEventListener('kora_trigger_pwa_install', handleTriggerPrompt);
       window.removeEventListener('kora_show_first_visit_install_prompt', handleTriggerPrompt);
@@ -136,7 +145,7 @@ export const FirstVisitInstallModal: React.FC<FirstVisitInstallModalProps> = ({
 
   // When user clicks "تثبيت التطبيق" (Install)
   const handleInstallClick = async () => {
-    const promptEvent = deferredPrompt || (window as any).deferredPwaPrompt;
+    const promptEvent = deferredPrompt || (window as any).deferredPwaPrompt || (window as any).__koraDeferredInstallPrompt;
 
     if (promptEvent) {
       try {
